@@ -1,0 +1,22 @@
+DESCRIÇÃO DO PROJETO: GCM (GENERAL CONTROL MODULE)
+Disciplina: Projeto Integrador 2
+Instituição: Faculdade de Ciências e Tecnologias em Engenharia (FCT) – Universidade de Brasília (UnB)
+
+1. VISÃO GERAL
+O presente projeto refere-se ao desenvolvimento da GCM (General Control Module), uma central eletrônica modular e de uso geral desenvolvida como solução de hardware para um robô da categoria Sumô, no âmbito da disciplina de Projeto Integrador 2 da Faculdade de Ciências e Tecnologias em Engenharia (FCT) da Universidade de Brasília (UnB).
+
+2. ARQUITETURA E CONECTIVIDADE
+A arquitetura da placa é construída em torno do módulo comercial ESP32-WROOM-32D, agregando conectividade Wi-Fi e Bluetooth, além de comunicação USB isolada, modos de configuração dinâmicos e um sistema dedicado de monitoramento de potência.
+
+O módulo permite alternar entre o uso de um barramento de comunicação CAN ou a atuação restrita às GPIOs nativas do microcontrolador, garantindo flexibilidade e facilitando possíveis expansões de arquitetura.
+
+3. TELEMETRIA DE POTÊNCIA
+O sistema de telemetria de potência utiliza um conversor analógico-digital (ADC) de 16 bits ADS1115 (externo ao ESP32), responsável pela amostragem de dois sinais compostos:
+
+- Sinal Interno: Leitura da corrente e tensão consumidas pela própria GCM e pelos circuitos por ela alimentados, utilizando um sensor Hall ACS712 e um divisor de tensão na entrada de alimentação do conector DB25 da placa.
+- Sinal Externo: Leitura da corrente e tensão consumidas por uma carga externa, conectada em série a um conector dedicado da GCM, utilizando um sensor Hall ACS758 e um segundo divisor de tensão independente. Nesta aplicação, este conjunto destina-se ao monitoramento da corrente drenada pelo conjunto motriz do robô, composto por pontes H externas à placa responsáveis pelo controle dos motores tracionadores.
+
+4. SISTEMAS DE PROTEÇÃO
+Para garantir a integridade do circuito, a GCM conta com:
+- Proteção contra inversão de polaridade: Implementada com MOSFET canal P.
+- Proteção contra surtos de tensão: Implementada com varistor S10K20V, protegendo o regulador de tensão interno do módulo.
