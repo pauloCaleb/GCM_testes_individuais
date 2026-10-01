@@ -1,0 +1,4 @@
+CONFIG_IDF_TARGET="esp32"
+
+# Log padrao em Info; reduza para Warn se o output do monitor ficar poluido
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
