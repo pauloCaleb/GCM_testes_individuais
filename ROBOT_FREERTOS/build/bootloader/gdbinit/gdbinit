@@ -1,0 +1,2 @@
+source /home/natangoatoso/unb/ROBOT_FREERTOS/build/bootloader/gdbinit/symbols
+source /home/natangoatoso/unb/ROBOT_FREERTOS/build/bootloader/gdbinit/connect
