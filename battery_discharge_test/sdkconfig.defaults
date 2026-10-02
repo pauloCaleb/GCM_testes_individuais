@@ -1,0 +1,16 @@
+CONFIG_IDF_TARGET="esp32"
+
+# Tick de 1 ms: o polling do bit OS do ADS1115 usa vTaskDelay(pdMS_TO_TICKS(1)),
+# que com o tick padrao de 10 ms truncaria para 0 tick (bug ja visto no gcm_core_test).
+CONFIG_FREERTOS_HZ=1000
+
+# Task watchdog com panic: se a task de aquisicao travar, a ESP32 reinicia.
+# No reset o GPIO23 volta a alta impedancia -> carga desabilitada pelo
+# pull externo do pino de enable (ver README).
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+
+# Console serial a 115200 (usado pelo battery_monitor.py)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

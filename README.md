@@ -2,7 +2,7 @@
 
 Repositório de testes de bancada (hardware e firmware) da **GCM (General Control Module)**, a central eletrônica do robô sumô da disciplina **Projeto Integrador 2** (FCTE – Universidade de Brasília).
 
-Cada teste isola um bloco da placa (núcleo lógico, telemetria de potência, expansor de I/O, sensor ToF) para validar o hardware antes da integração no firmware final do robô. O repositório também documenta a investigação de uma falha no chicote entre a GCM e a placa auxiliar ToFaB-i2c.
+Cada teste isola um bloco da placa (núcleo lógico, telemetria de potência, expansor de I/O, sensor ToF, descarga da bateria) para validar o hardware antes da integração no firmware final do robô. O repositório também documenta a investigação de uma falha no chicote entre a GCM e a placa auxiliar ToFaB-i2c.
 
 ## Sobre a GCM
 
@@ -19,11 +19,12 @@ A descrição completa está em [`HW_characteristics/`](HW_characteristics).
 
 ```
 GCM_testes_individuais/
-├── Firm_tests/                     # Projetos ESP-IDF 5.4.2 (um por teste), cada um em .zip
+├── Firm_tests/                     # Projetos ESP-IDF 5.4.2 (um por teste; em .zip, exceto o último)
 │   ├── gcm_core_test.zip
 │   ├── gcm_telemetry_i2c0.zip
 │   ├── pca9554_test.zip
-│   └── vl53l1x_esp_idf.zip
+│   ├── vl53l1x_esp_idf.zip
+│   └── battery_discharge_test/     # firmware + app Python (pasta, sem .zip)
 ├── HW_characteristics/
 │   ├── descricao_gcm.txt           # Visão geral da GCM
 │   └── resumo-hardware-placa.md    # Revisão bloco a bloco do esquemático
@@ -33,7 +34,7 @@ GCM_testes_individuais/
 
 ## Testes de firmware
 
-Todos usam **ESP-IDF 5.4.2**, alvo **ESP32** (WROOM clássico) e o driver novo `i2c_master` do ESP-IDF 5.x. Extraia o `.zip` desejado antes de compilar.
+Todos usam **ESP-IDF 5.4.2**, alvo **ESP32** (WROOM clássico) e o driver novo `i2c_master` do ESP-IDF 5.x. Extraia o `.zip` desejado antes de compilar (o `battery_discharge_test` já é uma pasta).
 
 | Projeto | Barramento / pinos | O que valida |
 |---|---|---|
@@ -41,6 +42,7 @@ Todos usam **ESP-IDF 5.4.2**, alvo **ESP32** (WROOM clássico) e o driver novo `
 | `gcm_telemetry_i2c0` | I2C0: SDA = GPIO21, SCL = GPIO22 (ADS1115 @ `0x49`) | Telemetria de potência já convertida para unidades físicas (V e A). O I2C1 não é usado. |
 | `pca9554_test` | I2C1: SDA = GPIO18, SCL = GPIO19 (PCA9554A @ `0x38`) | Valida o expansor de I/O que substituiu o PCF8574 e entrega um driver reutilizável (`components/pca9554`). Faz blink das 8 GPIOs com verificação por readback. |
 | `vl53l1x_esp_idf` | I2C: SDA = GPIO21, SCL = GPIO22 (VL53L1X @ `0x29`) | Driver mínimo, em nível de registrador, do sensor ToF VL53L1X: lê o Model ID (`0xEACC`) e faz ranging contínuo por polling. |
+| `battery_discharge_test` | I2C0: SDA = GPIO21, SCL = GPIO22 (ADS1115 @ `0x49`); GPIO23 = enable da carga | Descarga controlada da bateria do robô com cutoff ajustável (padrão 12 V). Ver a seção própria abaixo. |
 
 ### Escalas da telemetria (`gcm_telemetry_i2c0`)
 
@@ -68,6 +70,33 @@ Cada projeto traz mais detalhes (ligações, saída esperada, API do driver) no 
 > **Atenção:** os `.zip` de `Firm_tests/` incluem os diretórios `build/` (~32 MB cada). Ao extrair, o código-fonte útil está em `main/`, `components/`, `CMakeLists.txt` e `sdkconfig*`.
 >
 > **Atenção:** o `vl53l1x_esp_idf` não chegou a ser compilado no ambiente em que foi gerado; revise a saída do primeiro `idf.py build`.
+
+## Teste de descarga da bateria
+
+Pasta: [`Firm_tests/battery_discharge_test`](Firm_tests/battery_discharge_test) (detalhes completos no `README.md` dela).
+
+Usa o sensor externo da GCM (ACS758 + divisor de tensão, via ADS1115) para monitorar a descarga da bateria do robô por meio de uma carga eletrônica fixa. O firmware amostra tensão e corrente (10 Hz), integra Ah e Wh, estima a resistência interna e **desliga a carga ao atingir o cutoff** (padrão 12 V, ajustável por `menuconfig` ou pelo comando serial `CUTOFF`). O cutoff é decidido no firmware, então o teste termina certo mesmo que o PC desconecte.
+
+```
+bateria (+) ──► PWR_PAD_BATT ──[ACS758]──► PWR_PAD_SENS ──► carga eletrônica ──► bateria (−)
+```
+
+- A GCM é alimentada por **fonte de bancada** (não pela bateria) e a ToFaB fica desconectada.
+- O enable da carga é o **GPIO23** (CN15 pino 8), com polaridade configurável. Coloque um resistor de pull externo no enable, para a carga ficar desligada durante o boot e após reset.
+- O app `tools/battery_monitor.py` (Python, Tkinter) envia **Tara** e **START**, mostra os gráficos ao vivo (tensão × tempo, corrente × tempo e tensão × Ah, selecionáveis) e salva o **CSV** a cada teste, mais um `_resumo.txt`. Também exporta os três gráficos como PNG separados. Os arquivos saem na mesma pasta do script.
+- Proteções com a carga desligada e estado `FAULT`: sobrecorrente, ausência de corrente com a carga ligada, corrente com a carga desligada, bateria ausente ou abaixo do limite de partida, e falhas do ADS1115.
+
+```bash
+# firmware
+cd Firm_tests/battery_discharge_test
+idf.py set-target esp32 && idf.py menuconfig && idf.py build && idf.py -p /dev/ttyUSBx flash
+
+# app de acompanhamento
+pip install -r tools/requirements.txt
+python tools/battery_monitor.py
+```
+
+> Ao abrir ou fechar a porta serial, alguns adaptadores reiniciam o ESP32 (DTR/RTS). Conecte o app *antes* do START e evite reconectar durante a descarga.
 
 ## Testes e relatórios de hardware
 
