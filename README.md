@@ -28,8 +28,12 @@ GCM_testes_individuais/
 ├── HW_characteristics/
 │   ├── descricao_gcm.txt           # Visão geral da GCM
 │   └── resumo-hardware-placa.md    # Revisão bloco a bloco do esquemático
-└── HW_tests/
-    └── relatorio_perda_gnd_tofab_gcm.md   # Relatório: perda de GND no chicote GCM ↔ ToFaB
+├──HW_tests/
+│   │
+│   └── relatorio_perda_gnd_tofab_gcm.md   # Relatório: perda de GND no chicote GCM ↔ ToFaB
+└──atom_sparring_bot_FW/
+    │
+    └── #projeto completo do firmware do robo de Sparring desenvolvido para treinar o algoritmo do ARES 
 ```
 
 ## Testes de firmware
