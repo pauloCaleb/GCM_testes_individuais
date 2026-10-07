@@ -1,0 +1,6 @@
+# Name,   Type, SubType, Offset,   Size
+# Flash de 4 MB. "blog" guarda o log decimado do teste (32 bytes/registro, ~32 mil registros).
+nvs,      data, nvs,     0x9000,   0x6000
+phy_init, data, phy,     0xf000,   0x1000
+factory,  app,  factory, 0x10000,  0x180000
+blog,     data, 0x40,    0x190000, 0x100000

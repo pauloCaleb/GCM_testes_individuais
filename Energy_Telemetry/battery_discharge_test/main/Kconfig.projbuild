@@ -1,0 +1,245 @@
+menu "Battery discharge test"
+
+    comment "--- Cutoff e protecoes ---"
+
+    config BATT_CUTOFF_MV
+        int "Tensao de cutoff padrao (mV)"
+        default 12000
+        range 3000 30000
+        help
+          Ao ficar abaixo desta tensao por BATT_CUTOFF_CONSEC_SAMPLES amostras
+          seguidas, a carga e desligada. Pode ser alterado em runtime pelo
+          comando serial CUTOFF (somente fora de REST/DISCHARGE).
+
+    config BATT_CUTOFF_MIN_MV
+        int "Menor cutoff aceito em runtime (mV)"
+        default 10000
+        range 3000 30000
+
+    config BATT_CUTOFF_MAX_MV
+        int "Maior cutoff aceito em runtime (mV)"
+        default 16000
+        range 3000 30000
+
+    config BATT_CUTOFF_CONSEC_SAMPLES
+        int "Amostras consecutivas abaixo do cutoff para disparar"
+        default 5
+        range 1 100
+        help
+          Filtra afundamentos curtos e ruido. Com periodo de 100 ms, 5
+          amostras = 0,5 s.
+
+    config BATT_START_MARGIN_MV
+        int "Margem minima acima do cutoff para iniciar (mV)"
+        default 200
+        range 0 5000
+        help
+          O teste so inicia se a tensao em repouso (carga desligada) for maior
+          que cutoff + esta margem.
+
+    config BATT_PRESENT_MIN_MV
+        int "Tensao minima para considerar bateria presente (mV)"
+        default 5000
+        range 0 30000
+
+    config BATT_MAX_CURRENT_MA
+        int "Corrente maxima de descarga (mA) - protecao"
+        default 30000
+        range 100 50000
+        help
+          Acima disto por 3 amostras seguidas a carga e desligada (FAULT).
+          Ajuste para ficar acima da corrente nominal da sua carga fixa.
+
+    config BATT_MIN_CURRENT_MA
+        int "Corrente minima esperada com a carga ligada (mA)"
+        default 100
+        range 0 50000
+        help
+          Se, apos BATT_LOAD_SETTLE_MS com a carga habilitada, a corrente ficar
+          abaixo disto (5 amostras seguidas), o teste e abortado (FAULT):
+          indica carga desconectada, enable errado ou fiacao aberta.
+          0 desabilita a checagem.
+
+    config BATT_REST_MAX_CURRENT_MA
+        int "Corrente maxima tolerada com a carga desligada (mA)"
+        default 300
+        range 1 50000
+        help
+          Durante o REST (carga desligada), corrente acima disto indica carga
+          que nao desliga de verdade. O teste nao inicia (FAULT).
+
+    config BATT_MAX_TEST_S
+        int "Duracao maxima da descarga (s, 0 = sem limite)"
+        default 14400
+        range 0 1000000
+
+    config BATT_ADC_FAIL_LIMIT
+        int "Falhas consecutivas do ADS1115 que causam FAULT"
+        default 5
+        range 1 100
+
+    comment "--- Sequencia de teste ---"
+
+    config BATT_REST_MS
+        int "Tempo de repouso antes de ligar a carga (ms)"
+        default 3000
+        range 500 600000
+
+    config BATT_LOAD_SETTLE_MS
+        int "Tempo de assentamento apos ligar a carga (ms)"
+        default 1500
+        range 100 60000
+        help
+          Depois deste tempo sao feitas a checagem de corrente minima e a
+          medicao da resistencia interna (janela de 1 s).
+
+    config BATT_RECOVERY_S
+        int "Registro apos o cutoff, com carga desligada (s)"
+        default 60
+        range 0 3600
+
+    config BATT_TARE_SAMPLES
+        int "Amostras da tara do ACS758"
+        default 200
+        range 20 2000
+
+    config BATT_TARE_ZERO_TOL_MV
+        int "Tolerancia do zero do ACS758 em torno de 2,5 V (mV)"
+        default 150
+        range 10 1000
+        help
+          Tara fora desta faixa e rejeitada (sensor ausente/defeituoso ou
+          corrente passando com a carga desligada).
+
+    comment "--- Aquisicao ---"
+
+    config BATT_SAMPLE_PERIOD_MS
+        int "Periodo de amostragem/saida (ms)"
+        default 100
+        range 20 10000
+
+    config BATT_OVERSAMPLE
+        int "Conversoes do ADS1115 por canal em cada amostra (media)"
+        default 4
+        range 1 32
+        help
+          Cada conversao leva ~6 ms (860 SPS + I2C). O tempo total por amostra
+          e aproximadamente 2 canais x BATT_OVERSAMPLE x 6 ms e precisa caber
+          em BATT_SAMPLE_PERIOD_MS.
+
+    config BATT_I2C_FREQ_HZ
+        int "Frequencia do I2C0 (Hz)"
+        default 400000
+        range 10000 400000
+
+    config BATT_V_DIV_RATIO_X10000
+        int "Razao do divisor de tensao PWR_VOLTAGE_SENS (x10000)"
+        default 57000
+        range 10000 200000
+        help
+          (R8+R15)/R15 = (4,7k+1k)/1k = 5,7 -> 57000. Ajuste fino contra um
+          multimetro.
+
+    config BATT_I_SENS_UV_PER_A
+        int "Sensibilidade do ACS758 (uV/A)"
+        default 40000
+        range 1000 200000
+        help
+          ACS758LCB-050B: 40 mV/A com Vcc = 5 V.
+
+    comment "--- Carga eletronica ---"
+
+    config BATT_LOAD_GPIO
+        int "GPIO de enable da carga (CN15 pino 8)"
+        default 23
+        range 0 33
+
+    config BATT_LOAD_ACTIVE_HIGH
+        bool "Enable ativo em nivel alto"
+        default y
+
+    comment "--- Zero do sensor ---"
+
+    config BATT_REZERO_AT_REST
+        bool "Re-zerar o ACS758 automaticamente durante o REST"
+        default y
+        help
+          Durante o repouso (carga desligada) o firmware mede o zero do ACS758 de novo e
+          passa a usa-lo, descontando a deriva acumulada desde a tara. A diferenca e
+          registrada no evento REZERO. O desvio maximo aceito e BATT_REST_MAX_CURRENT_MA.
+
+    config BATT_REZERO_MAX_MA
+        int "Desvio maximo do zero aceito como deriva do sensor (mA)"
+        default 100
+        range 1 1000
+        help
+          O re-zero no REST e a correcao de Ah pela deriva so valem quando a diferenca de
+          zero e menor que isto. Acima, o firmware assume corrente real (vazamento da carga)
+          e NAO corrige (eventos REZERO_REJECTED / DRIFT_TOO_LARGE).
+
+    comment "--- Rele em serie com a carga (opcional) ---"
+
+    config BATT_RELAY_ENABLE
+        bool "Comandar um rele NA em serie com a carga"
+        default n
+        help
+          Quando habilitado: o rele fecha antes de habilitar a carga e abre depois de
+          desabilita-la (cutoff, STOP, FAULT, tara e REST ficam com o rele aberto).
+          Use um rele normalmente aberto, com transistor e diodo de roda-livre.
+
+    config BATT_RELAY_GPIO
+        int "GPIO do rele"
+        depends on BATT_RELAY_ENABLE
+        default 16
+        range 0 33
+
+    config BATT_RELAY_ACTIVE_HIGH
+        bool "Rele fecha com nivel alto"
+        depends on BATT_RELAY_ENABLE
+        default y
+
+    config BATT_RELAY_CLOSE_DELAY_MS
+        int "Espera entre fechar o rele e habilitar a carga (ms)"
+        depends on BATT_RELAY_ENABLE
+        default 50
+        range 0 1000
+
+    config BATT_RELAY_OPEN_DELAY_MS
+        int "Espera entre desabilitar a carga e abrir o rele (ms)"
+        depends on BATT_RELAY_ENABLE
+        default 100
+        range 0 1000
+
+    comment "--- Bluetooth Classic (SPP) ---"
+
+    config BATT_BT_ENABLE
+        bool "Habilitar Bluetooth SPP (porta COM no PC)"
+        default y
+
+    config BATT_BT_NAME
+        string "Nome do dispositivo Bluetooth"
+        depends on BATT_BT_ENABLE
+        default "GCM-BATT"
+
+    config BATT_BT_PIN
+        string "PIN de pareamento (ate 16 digitos)"
+        depends on BATT_BT_ENABLE
+        default "1234"
+        help
+          TROQUE o PIN padrao. Quem parear com o dispositivo consegue enviar START.
+
+    comment "--- Log em flash ---"
+
+    config BATT_LOG_INTERVAL_MS
+        int "Intervalo do log em flash (ms)"
+        default 1000
+        range 200 60000
+
+    config BATT_LOG_DUMP_PER_TICK
+        int "Registros do log enviados por ciclo durante o LOG"
+        default 5
+        range 1 20
+        help
+          Limita a banda usada pelo download para nao atrasar a aquisicao.
+
+endmenu

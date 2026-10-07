@@ -1,0 +1,23 @@
+CONFIG_IDF_TARGET="esp32"
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Tick de 1 ms: os drivers fazem vTaskDelay(pdMS_TO_TICKS(2)) em loops de
+# polling (boot / data-ready do VL53L1X). Com tick de 100 Hz isso vira 0 ticks.
+# Os timeouts do driver i2c_master continuam em ms diretos (nao dependem do tick).
+CONFIG_FREERTOS_HZ=1000
+
+# Console/protocolo na UART0 (CH340C -> USB isolado), 921600 baud.
+# ATENCAO: no ESP-IDF 5.4 o baud do console SO e configuravel com "Custom UART"
+# (com "Default: UART0" o valor abaixo seria ignorado e ficaria em 115200).
+# O baud da GUI (test_soft) precisa ser o mesmo. O CH340C suporta 50 bps a 2 Mbps.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=1
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=3
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+
+# Modulo ESP32-WROOM-32D com 4 MB de flash
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

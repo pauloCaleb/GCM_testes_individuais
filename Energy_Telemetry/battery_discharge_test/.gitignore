@@ -1,0 +1,9 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+.cache/
+__pycache__/
+*.pyc
+# saidas geradas pelo battery_monitor.py (ficam na pasta tools/)
+tools/descarga_*/
