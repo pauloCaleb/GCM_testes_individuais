@@ -1,0 +1,7 @@
+Arquivo de dados: descarga_20261003_222907.csv
+
+EVENTOS
+  E;REST_START;rest_ms=3000,cutoff_mV=12000
+  E;LOAD_ON;v_rest_V=16.5667,cutoff_mV=12000
+  E;RINT;rint_mohm=197.1,v_load_V=15.8145,i_load_A=3.8165
+  E;LOAD_OFF;CUTOFF;v_V=11.5104,i_A=3.9846,q_Ah=0.118101,e_Wh=1.86331,t_s=107.9

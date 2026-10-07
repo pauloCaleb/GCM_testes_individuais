@@ -1,22 +1,39 @@
 DESCRIÇÃO DO PROJETO: GCM (GENERAL CONTROL MODULE)
 Disciplina: Projeto Integrador 2
 Instituição: Faculdade de Ciências e Tecnologias em Engenharia (FCT) – Universidade de Brasília (UnB)
+Revisão de referência: GCM-PI2-2026.2 (esquemático atualizado em 2026-10-07)
 
 1. VISÃO GERAL
 O presente projeto refere-se ao desenvolvimento da GCM (General Control Module), uma central eletrônica modular e de uso geral desenvolvida como solução de hardware para um robô da categoria Sumô, no âmbito da disciplina de Projeto Integrador 2 da Faculdade de Ciências e Tecnologias em Engenharia (FCT) da Universidade de Brasília (UnB).
 
 2. ARQUITETURA E CONECTIVIDADE
-A arquitetura da placa é construída em torno do módulo comercial ESP32-WROOM-32D, agregando conectividade Wi-Fi e Bluetooth, além de comunicação USB isolada, modos de configuração dinâmicos e um sistema dedicado de monitoramento de potência.
+A arquitetura da placa é construída em torno do módulo comercial ESP32-WROOM-32D, agregando conectividade Wi-Fi e Bluetooth, além de comunicação USB isolada (ADuM3160 + CH340C com auto-download), modos de configuração dinâmicos e um sistema dedicado de monitoramento de potência.
 
-O módulo permite alternar entre o uso de um barramento de comunicação CAN ou a atuação restrita às GPIOs nativas do microcontrolador, garantindo flexibilidade e facilitando possíveis expansões de arquitetura.
+A placa pode operar com um transceiver CAN (TJA1050) ou, sem ele, liberar os dois pinos correspondentes (GPIO32/GPIO33) como GPIOs nativas no conector principal, por meio de resistores de 0 Ω (R40–R43). Na configuração atual, o CAN está habilitado.
 
-3. TELEMETRIA DE POTÊNCIA
-O sistema de telemetria de potência utiliza um conversor analógico-digital (ADC) de 16 bits ADS1115 (externo ao ESP32), responsável pela amostragem de dois sinais compostos:
+3. INTERFACE COM O ROBÔ (CONECTOR PRINCIPAL CN15)
+O conector principal de 27 pinos concentra alimentação e sinais do robô:
+- Alimentação: entrada bruta V_SUPPLY (12–24 V) e saídas de +5 V e +3,3 V para circuitos externos, além de seis pinos de GND.
+- Pontes H externas: EN_ALL (GPIO23), PWM1 (GPIO13), DIR_1 (GPIO17), PWM2 (GPIO27) e DIR2 (GPIO25).
+- Sensores de borda: BS_1 (GPIO34), BS_2 (GPIO35), BS_3 (GPIO16) e BS_4 (GPIO14).
+- Botão de start: START_BOT (GPIO4).
+- Expansor de I/O PCA9554 externo à placa, no barramento I2C1: SCL1 (GPIO19), SDA1 (GPIO18) e interrupção PCA9554_INT (GPIO26).
+- Barramento CAN (CANH/CANL) ou GPIO32/GPIO33, conforme a configuração dos resistores R40–R43.
+A tabela completa de pinos e as cores dos fios do chicote estão no resumo de hardware.
 
-- Sinal Interno: Leitura da corrente e tensão consumidas pela própria GCM e pelos circuitos por ela alimentados, utilizando um sensor Hall ACS712 e um divisor de tensão na entrada de alimentação do conector DB25 da placa.
-- Sinal Externo: Leitura da corrente e tensão consumidas por uma carga externa, conectada em série a um conector dedicado da GCM, utilizando um sensor Hall ACS758 e um segundo divisor de tensão independente. Nesta aplicação, este conjunto destina-se ao monitoramento da corrente drenada pelo conjunto motriz do robô, composto por pontes H externas à placa responsáveis pelo controle dos motores tracionadores.
+4. TELEMETRIA DE POTÊNCIA
+O sistema de telemetria de potência utiliza um conversor analógico-digital (ADC) de 16 bits ADS1115 (externo ao ESP32), no barramento I2C0 (GPIO21/GPIO22, com level shifter 3,3 V ↔ 5 V), responsável pela amostragem de dois sinais compostos:
 
-4. SISTEMAS DE PROTEÇÃO
+- Sinal Interno: Leitura da corrente e tensão consumidas pela própria GCM e pelos circuitos por ela alimentados, utilizando um sensor Hall ACS712 e um divisor de tensão na entrada de alimentação da placa.
+- Sinal Externo: Leitura da corrente e tensão consumidas por uma carga externa, conectada em série a um par de PADs dedicados da GCM, utilizando um sensor Hall ACS758 e um segundo divisor de tensão independente. Nesta aplicação, este conjunto destina-se ao monitoramento da corrente drenada pelo conjunto motriz do robô, composto por pontes H externas à placa responsáveis pelo controle dos motores tracionadores.
+
+A alimentação do ADS1115 passa por um filtro pi (22 µH, 2,2 Ω e 2 x 10 µF) para atenuar o ripple de 150 kHz do conversor buck LM2596 (≈ 45,8 dB teóricos; ≈ 56 dB em simulação LTspice).
+
+5. SISTEMAS DE PROTEÇÃO
 Para garantir a integridade do circuito, a GCM conta com:
-- Proteção contra inversão de polaridade: Implementada com MOSFET canal P.
-- Proteção contra surtos de tensão: Implementada com varistor S10K20V, protegendo o regulador de tensão interno do módulo.
+- Proteção contra inversão de polaridade: Implementada com MOSFET canal P (IRF9530), com zener de 10 V limitando a tensão de gate.
+- Proteção contra surtos de tensão: Implementada com varistor S10K20V na entrada de alimentação, protegendo o regulador de tensão interno do módulo.
+- Isolação galvânica na interface USB (ADuM3160), separando o PC do restante da placa.
+
+6. CRITÉRIOS DE SELEÇÃO DE COMPONENTES
+Componentes como o ESP32-WROOM-32D (marcado como NRND), LM2596, TJA1050, ACS712/ACS758 e CH340 foram escolhidos pela disponibilidade e pelo baixo custo no mercado brasileiro. Já o ADuM3160 e o BSN20 foram escolhidos pela funcionalidade, exigindo importação. Os quatro furos de fixação destinam-se ao contato com o chassi do robô para redundância de aterramento.
