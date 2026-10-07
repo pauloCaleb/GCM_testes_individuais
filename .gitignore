@@ -1,0 +1,15 @@
+# Saídas de build do ESP-IDF (geradas por idf.py build)
+build/
+managed_components/
+dependencies.lock
+
+# sdkconfig é gerado a partir do sdkconfig.defaults de cada projeto
+sdkconfig
+sdkconfig.old
+
+# Ferramentas / IDE
+.cache/
+.vscode/c_cpp_properties.json
+__pycache__/
+*.pyc
+.pytest_cache/
