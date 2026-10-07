@@ -4,7 +4,9 @@ Repositório de testes de bancada (hardware e firmware) da **GCM (General Contro
 
 Cada teste isola um bloco da placa (núcleo lógico, telemetria de potência, expansor de I/O, sensores ToF, entradas, descarga da bateria) para validar o hardware antes da integração no firmware final do robô. O repositório também documenta a investigação de uma falha no chicote entre a GCM e a placa auxiliar ToFaB-i2c.
 
-> **Referência de hardware:** o conjunto firmware + software Python de [`HW_tests/gcm_test_base`](HW_tests/gcm_test_base), testado em bancada com sensores e atuadores. O pinout de todos os projetos segue o [`app_config.h`](HW_tests/gcm_test_base/firm/main/app_config.h) dele.
+> **Status do hardware:** GCM-PI2-2026.2 testada e funcionando em bancada com sensores de borda, botão de start, ToFaB (PCA9554A + 3x VL53L1X + LEDs) e os dois motores.
+>
+> **Referência de hardware:** o conjunto firmware + software Python de [`HW_tests/gcm_test_base`](HW_tests/gcm_test_base), usado nessa validação. O pinout de todos os projetos segue o [`app_config.h`](HW_tests/gcm_test_base/firm/main/app_config.h) dele.
 
 ## Sobre a GCM
 

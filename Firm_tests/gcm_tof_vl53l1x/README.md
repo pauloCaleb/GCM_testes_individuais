@@ -67,5 +67,5 @@ idf.py -p /dev/ttyUSBx flash monitor
 - Os pull-ups do I2C1 (R26/R27, 3,3 kΩ) só existem na placa se estiverem
   montados; o firmware também liga o pull-up interno (como nos projetos de
   referência), que sozinho é fraco para 400 kHz com 4 dispositivos.
-- Não foi compilado com o toolchain do ESP-IDF; só passou checagem de sintaxe
-  com headers simulados. Revise a saída do primeiro `idf.py build`.
+- Validado em bancada com a ToFaB: os três sensores sobem em 0x30/0x31/0x32 e
+  medem normalmente. Esta sequência de boot é a mesma usada no `gcm_test_base`.
