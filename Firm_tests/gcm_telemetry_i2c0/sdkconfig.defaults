@@ -2,3 +2,6 @@ CONFIG_IDF_TARGET="esp32"
 
 # Log padrao em Info; reduza para Warn se o output do monitor ficar poluido
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Modulo ESP32-WROOM-32D com 4 MB de flash
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

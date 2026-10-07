@@ -6,12 +6,11 @@
 
 #include "vl53l1x.h"
 
-/* Ajuste esses pinos para a sua placa. Nos ESP32-DevKit "genéricos" os
- * pinos abaixo costumam estar livres, mas confira o pinout da sua placa
- * específica antes de ligar o sensor. */
+/* I2C1 da GCM: SDA1/SCL1 no CN15 (pinos 16/3), como em HW_tests/gcm_test_base.
+ * O I2C0 (GPIO21/22) fica com o ADS1115. */
 #define I2C_SDA_GPIO   18
 #define I2C_SCL_GPIO   19
-#define I2C_PORT       I2C_NUM_0
+#define I2C_PORT       I2C_NUM_1
 
 static const char *TAG = "app_main";
 

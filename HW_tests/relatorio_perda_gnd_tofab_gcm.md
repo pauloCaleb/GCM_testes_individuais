@@ -110,7 +110,7 @@ Com o GND da ToFaB desconectado e a bateria ligada, o ESP32 da GCM queima. Falha
 
 **Análise:**
 
-- **Premissa descartada:** o ESP32 não é 5V tolerant (limite próximo a VDD + 0,3 V). A própria GCM usa um divisor (R28/R29) no RXD do TJA1050 para não levar 5 V ao GPIO34.
+- **Premissa descartada:** o ESP32 não é 5V tolerant (limite próximo a VDD + 0,3 V). A própria GCM usa um divisor (R28/R29) no RXD do TJA1050 para não levar 5 V ao GPIO33 (RX_CAN).
 - Mesmo com um MCU 5V tolerant (por exemplo, pinos FT de alguns STM32), a tolerância cobre só a **tensão** no pino. A **corrente de retorno** da carga da ToFaB continuaria passando pelo I2C.
 - O rail de 3,3 V pode ser elevado pela corrente injetada, pois o LM1117 não drena corrente.
 

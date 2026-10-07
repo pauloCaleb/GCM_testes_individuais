@@ -1,0 +1,11 @@
+CONFIG_IDF_TARGET="esp32"
+
+# Tick de 1 ms, como na base de testes (HW_tests/gcm_test_base): o driver faz
+# vTaskDelay(pdMS_TO_TICKS(2)) nos loops de polling, que vira 0 tick a 100 Hz.
+CONFIG_FREERTOS_HZ=1000
+
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# Modulo ESP32-WROOM-32D com 4 MB de flash
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

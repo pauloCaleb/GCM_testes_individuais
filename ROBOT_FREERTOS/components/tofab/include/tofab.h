@@ -14,7 +14,8 @@
  *   P2 = ToF_XSHUT3 (sensor direito,  0x32)
  *   P3 = header H5 (configurado como entrada)
  *   P4 = header H5 (configurado como entrada)
- *   P5 = BLUE_LED, P6 = GREEN_LED, P7 = RED_LED (via BC337, ativo em alto)
+ *   P7 / P6 / P5 = LEDs 1 / 2 / 3 da fita (via BC337, ativos em alto).
+ *   Os nomes RED/GREEN/BLUE abaixo são só apelidos de LED 1/2/3.
  *
  * Cada XSHUT tem pull-up de 10k para +3,3V (R13-R15) na placa. Como o
  * PCA9554 liga com todos os pinos como entrada, os sensores ficam ativos
@@ -67,9 +68,12 @@ typedef enum {
     TOFAB_TOF_RIGHT  = 2, /*!< XSHUT3, 0x32, cone direito  */
 } tofab_tof_id_t;
 
-/** Cores do LED RGB, combináveis com OR. */
+/** LEDs da fita, combináveis com OR. */
 typedef enum {
     TOFAB_LED_OFF   = 0,
+    TOFAB_LED_1     = 1u << TOFAB_PIN_RED_LED,   /*!< P7 */
+    TOFAB_LED_2     = 1u << TOFAB_PIN_GREEN_LED, /*!< P6 */
+    TOFAB_LED_3     = 1u << TOFAB_PIN_BLUE_LED,  /*!< P5 */
     TOFAB_LED_RED   = 1u << TOFAB_PIN_RED_LED,
     TOFAB_LED_GREEN = 1u << TOFAB_PIN_GREEN_LED,
     TOFAB_LED_BLUE  = 1u << TOFAB_PIN_BLUE_LED,
@@ -144,7 +148,7 @@ esp_err_t tofab_read(tofab_t *b, tofab_tof_id_t id, tofab_reading_t *out);
 /** Lê os três ToF com tofab_read(). Retorna o primeiro erro encontrado. */
 esp_err_t tofab_read_all(tofab_t *b, tofab_reading_t out[TOFAB_NUM_TOF]);
 
-/** Define o LED RGB (combinação de tofab_led_t). */
+/** Define os LEDs da fita (combinação de tofab_led_t). */
 esp_err_t tofab_set_led(tofab_t *b, uint8_t leds);
 
 #ifdef __cplusplus

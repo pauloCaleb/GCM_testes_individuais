@@ -3,7 +3,7 @@
  *
  * Bring-up dos sensores do robô:
  *   - ToFaB no I2C1 (SDA=GPIO18, SCL=GPIO19): PCA9554A + 3x VL53L1X;
- *   - 4 sensores de borda LM393 por GPIO com interrupção e latch.
+ *   - 4 sensores de borda LM393 (BS_1..BS_4) por GPIO com interrupção e latch.
  *
  * A task de borda acorda pela ISR; a task de ToF faz polling não bloqueante.
  * No robô, quem destrava a borda é a máquina de estados ao fim do escape;
@@ -22,7 +22,8 @@
 
 static const char *TAG = "robot";
 
-/* I2C1 da GCM: nets SCL1/SDA1 no DB25 (CN15), exclusivo da ToFaB. */
+/* I2C1 da GCM: nets SCL1/SDA1 no CN15 (pinos 3/16), exclusivo da ToFaB.
+ * Os pull-ups R26/R27 precisam estar montados (PCA9554A + 3 ToF a 400 kHz). */
 #define I2C1_PORT       I2C_NUM_1
 #define I2C1_SDA_GPIO   GPIO_NUM_18
 #define I2C1_SCL_GPIO   GPIO_NUM_19

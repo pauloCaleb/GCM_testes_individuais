@@ -7,3 +7,6 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # i2c_master_receive) já são em milissegundos diretos, não em ticks, então isso não afeta
 # o driver do PCA9554 (ver PCA9554_I2C_XFER_TIMEOUT_MS em pca9554.h)
 CONFIG_FREERTOS_HZ=100
+
+# Modulo ESP32-WROOM-32D com 4 MB de flash
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

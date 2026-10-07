@@ -2,11 +2,14 @@
  * @file edge_sensor.h
  * @brief Sensores de borda LM393 com interrupção e latch.
  *
- * Ligação via DB25:
- *   GPIO23       -> borda frontal esquerda
- *   GPIO35       -> borda frontal direita
- *   GPIO34       -> borda traseira esquerda
- *   GPIO32 ou 33 -> borda traseira direita (depende dos jumpers R40-R43 do CAN)
+ * Ligação via CN15 (GCM-PI2-2026.2, igual a HW_tests/gcm_test_base):
+ *   BS_1 GPIO34 (CN15-21) -> borda frontal esquerda  (pull-up externo R23)
+ *   BS_2 GPIO35 (CN15-9)  -> borda frontal direita   (pull-up externo R22)
+ *   BS_3 GPIO16 (CN15-19) -> borda traseira esquerda (pull-up interno)
+ *   BS_4 GPIO14 (CN15-18) -> borda traseira direita  (pull-up interno)
+ *
+ * Confirme na montagem qual sensor físico vai em cada BS_x; as macros abaixo
+ * podem ser redefinidas antes do include.
  *
  * Nível lógico: 0 = linha branca, 1 = piso preto.
  */
@@ -23,17 +26,16 @@ extern "C" {
 #endif
 
 #ifndef EDGE_GPIO_FRONT_LEFT
-#define EDGE_GPIO_FRONT_LEFT    GPIO_NUM_23
+#define EDGE_GPIO_FRONT_LEFT    GPIO_NUM_34   /* BS_1 */
 #endif
 #ifndef EDGE_GPIO_FRONT_RIGHT
-#define EDGE_GPIO_FRONT_RIGHT   GPIO_NUM_35
+#define EDGE_GPIO_FRONT_RIGHT   GPIO_NUM_35   /* BS_2 */
 #endif
 #ifndef EDGE_GPIO_REAR_LEFT
-#define EDGE_GPIO_REAR_LEFT     GPIO_NUM_34
+#define EDGE_GPIO_REAR_LEFT     GPIO_NUM_16   /* BS_3 */
 #endif
-/* Trocar para GPIO_NUM_33 conforme o jumper de 0R (R40-R43) montado na GCM. */
 #ifndef EDGE_GPIO_REAR_RIGHT
-#define EDGE_GPIO_REAR_RIGHT    GPIO_NUM_32
+#define EDGE_GPIO_REAR_RIGHT    GPIO_NUM_14   /* BS_4 */
 #endif
 
 typedef enum {

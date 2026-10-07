@@ -17,11 +17,15 @@ components/vl53l1x/vl53l1x.c       -> driver próprio, register-level
 |---------|-----------------|
 | VIN     | 3V3             |
 | GND     | GND             |
-| SDA     | GPIO21 (ajustável em main.c) |
-| SCL     | GPIO22 (ajustável em main.c) |
+| SDA     | GPIO18 = SDA1 (CN15-16, I2C1 da GCM) |
+| SCL     | GPIO19 = SCL1 (CN15-3, I2C1 da GCM) |
 | XSHUT   | não usado (deixar sempre em nível alto / não conectado, sensor sempre ativo) |
 
 Endereço I2C padrão: `0x29`.
+
+Pinos iguais aos da base de testes validada (`HW_tests/gcm_test_base`). Este projeto
+fala com **um** sensor; para os 3 VL53L1X da ToFaB (XSHUT pelo PCA9554A) use
+`Firm_tests/gcm_tof_vl53l1x`. O I2C0 (GPIO21/22) é do ADS1115 e não deve ser usado aqui.
 
 ## Compilar e gravar
 

@@ -1,42 +1,44 @@
 /*
  * GCM-PI2-2026.2 — Firmware de bring-up do "Logic Core"
  * ------------------------------------------------------
- * Objetivo: validar o core da placa (sem o TJA1050 populado) antes dos
- * testes de CAN em outro projeto.
+ * Objetivo: validar o core da placa antes de ligar os periféricos do robô.
  *
  *  1) Le continuamente as 4 tensoes do ADS1115 (AIN0..AIN3) e envia via
  *     serial (USB isolado -> CH340 -> UART0).
- *  2) Amostra os dois GPIOs input-only (GPIO34/GPIO35) e envia o estado.
- *  3) Aciona sequencialmente todos os demais GPIOs de saida expostos no
- *     CN15 (um "chase" com LED em cada saida), para confirmar que cada
- *     trilha/pino esta funcional.
+ *  2) Amostra as entradas do CN15 (BS_1..BS_4, START_BOT, PCA9554_INT).
+ *  3) Aciona sequencialmente as saidas expostas no CN15 (um "chase" com
+ *     LED em cada saida), para confirmar que cada trilha/pino esta funcional.
  *
- * Mapeamento de pinos (conferido diretamente no esquematico
- * GCM-PI2-2026.2-211062820, folha Logic_core — pontos de juncao, nao
- * proximidade de trilhas):
+ * Pinout do CN15 (GCM-PI2-2026.2, mesmo da base de testes validada em
+ * HW_tests/gcm_test_base/firm/main/app_config.h):
  *
- *   Sinal (net)          GPIO   CN15   Observacao
- *   -------------------- ------ ------ ------------------------------
- *   HC595_DS             25     4      shift register
- *   HC595_CLK            26     17     shift register
- *   HC595_LATCH          27     5      shift register
- *   DIR_2                14     18     motor/atuador
- *   DIR_1                17     6      motor/atuador
- *   EN_ALL               16     19     motor/atuador
- *   PWM1                 13     7      motor/atuador
- *   PWM2                 4      20     motor/atuador
- *   GPIO23                23     8      uso geral
- *   CANL/GPIO32           32     12     GPIO puro (R40-R43 = 0R, TJA1050 NAO populado)
- *   CANH/GPIO33            33     13     GPIO puro (R40-R43 = 0R, TJA1050 NAO populado)
- *   GPIO34 (input-only)   34     21     pull-up externo R22, ja na placa
- *   GPIO35 (input-only)   35     9      pull-up externo R23, ja na placa
- *   SDA3V3 (I2C p/ ADS1115) 21   -      level-shiftado (Q2/Q3) p/ 5V
- *   SCL3V3 (I2C p/ ADS1115) 22   -      level-shiftado (Q2/Q3) p/ 5V
+ *   Sinal (net)    GPIO   CN15   Direcao   Observacao
+ *   -------------- ------ ------ --------- ------------------------------
+ *   EN_ALL         23     8      saida     fio roxo (pontes H)
+ *   PWM1           13     7      saida     fio cinza  (motor 1)
+ *   DIR_1          17     6      saida     fio branco (motor 1)
+ *   PWM2           27     5      saida     fio preto  (motor 2)
+ *   DIR2           25     4      saida     fio marrom (motor 2)
+ *   SDA1           18     16     saida*    I2C1 (ver OBS)
+ *   SCL1           19     3      saida*    I2C1 (ver OBS)
+ *   BS_1           34     21     entrada   pull-up externo R23
+ *   BS_2           35     9      entrada   pull-up externo R22
+ *   BS_3           16     19     entrada   pull-up interno
+ *   BS_4           14     18     entrada   pull-up interno
+ *   START_BOT      4      20     entrada   pull-up interno
+ *   PCA9554_INT    26     17     entrada   pull-up interno (INT e open-drain)
+ *   CANL/GPIO32    32     12     saida     so com GCM_CAN_POPULATED = 0
+ *   CANH/GPIO33    33     13     saida     so com GCM_CAN_POPULATED = 0
+ *   SDA3V3 (ADS1115) 21   -      I2C0      level-shiftado (Q2/Q3) p/ 5V
+ *   SCL3V3 (ADS1115) 22   -      I2C0      level-shiftado (Q2/Q3) p/ 5V
  *
- * OBS: SDA1/SCL1 (GPIO18/GPIO19, CN15 pinos 16/3) entram na varredura
- * de saidas como teste ELETRICO de continuidade ate o conector — o
- * firmware nunca fala protocolo I2C1 neles, so aciona/desaciona como
- * GPIO digital comum (vence os pull-ups de 3,3kOhm R26/R27).
+ * ATENCAO: o chase leva EN_ALL, PWM e DIR a nivel alto, um de cada vez.
+ * Rode este teste com as pontes H DESCONECTADAS (LEDs no lugar).
+ *
+ * OBS: SDA1/SCL1 entram na varredura de saidas como teste ELETRICO de
+ * continuidade ate o conector — o firmware nunca fala protocolo I2C1
+ * neles, so aciona/desaciona como GPIO digital comum (vence os pull-ups
+ * de 3,3kOhm R26/R27). Desconecte a ToFaB durante o teste.
  *
  * Canais do ADS1115 (endereco 0x49, ADDR->+5V, confirmado no doc):
  *   AIN0 -> PWR_VOLTAGE_SENS
@@ -117,8 +119,27 @@ static i2c_master_dev_handle_t g_ads1115;
 
 /* ------------------------------ GPIO ------------------------------ */
 
-#define GPIO_INPUT_34 GPIO_NUM_34
-#define GPIO_INPUT_35 GPIO_NUM_35
+/* 1 = TJA1050 montado (configuracao atual da placa): GPIO32/33 ficam com o
+ * CAN e saem da varredura. 0 = R41/R43 montados, GPIO32/33 no CN15. */
+#ifndef GCM_CAN_POPULATED
+#define GCM_CAN_POPULATED 1
+#endif
+
+typedef struct {
+    gpio_num_t  pin;
+    const char *net_name;
+    bool        internal_pullup;   /* GPIO34/35 nao tem pull interno */
+} gpio_in_t;
+
+static const gpio_in_t g_inputs[] = {
+    { GPIO_NUM_34, "BS_1",        false }, /* R23 na placa */
+    { GPIO_NUM_35, "BS_2",        false }, /* R22 na placa */
+    { GPIO_NUM_16, "BS_3",        true  },
+    { GPIO_NUM_14, "BS_4",        true  },
+    { GPIO_NUM_4,  "START_BOT",   true  },
+    { GPIO_NUM_26, "PCA9554_INT", true  },
+};
+#define NUM_INPUTS (sizeof(g_inputs) / sizeof(g_inputs[0]))
 
 typedef struct {
     gpio_num_t  pin;
@@ -126,17 +147,15 @@ typedef struct {
 } gpio_out_t;
 
 static const gpio_out_t g_outputs[] = {
-    { GPIO_NUM_25, "HC595_DS"     },
-    { GPIO_NUM_26, "HC595_CLK"    },
-    { GPIO_NUM_27, "HC595_LATCH"  },
-    { GPIO_NUM_14, "DIR_2"        },
-    { GPIO_NUM_17, "DIR_1"        },
-    { GPIO_NUM_16, "EN_ALL"       },
+    { GPIO_NUM_23, "EN_ALL"       },
     { GPIO_NUM_13, "PWM1"         },
-    { GPIO_NUM_4,  "PWM2"         },
-    { GPIO_NUM_23, "GPIO23"       },
-    { GPIO_NUM_32, "CANL/GPIO32"  }, /* requer R40-R43=0R e TJA1050 NAO populado */
-    { GPIO_NUM_33, "CANH/GPIO33"  }, /* requer R40-R43=0R e TJA1050 NAO populado */
+    { GPIO_NUM_17, "DIR_1"        },
+    { GPIO_NUM_27, "PWM2"         },
+    { GPIO_NUM_25, "DIR2"         },
+#if !GCM_CAN_POPULATED
+    { GPIO_NUM_32, "CANL/GPIO32"  }, /* requer R41/R43 montados e TJA1050 NAO populado */
+    { GPIO_NUM_33, "CANH/GPIO33"  }, /* requer R41/R43 montados e TJA1050 NAO populado */
+#endif
     { GPIO_NUM_19, "SCL1"         }, /* teste eletrico de continuidade ate CN15 pino 3 */
     { GPIO_NUM_18, "SDA1"         }, /* teste eletrico de continuidade ate CN15 pino 16 */
 };
@@ -247,16 +266,16 @@ static esp_err_t ads1115_read_single_ended(ads_channel_t ch, float *out_volts)
 
 static void gpio_init_all(void)
 {
-    /* Entradas input-only — pull-up ja existe na placa (R22/R23), nao ha
-     * pull interno disponivel de qualquer forma para GPIO34/35. */
-    gpio_config_t in_cfg = {
-        .pin_bit_mask = (1ULL << GPIO_INPUT_34) | (1ULL << GPIO_INPUT_35),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&in_cfg));
+    for (size_t i = 0; i < NUM_INPUTS; i++) {
+        gpio_config_t in_cfg = {
+            .pin_bit_mask = 1ULL << g_inputs[i].pin,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = g_inputs[i].internal_pullup ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&in_cfg));
+    }
 
     uint64_t out_mask = 0;
     for (size_t i = 0; i < NUM_OUTPUTS; i++) {
@@ -280,17 +299,17 @@ static void gpio_init_all(void)
 
 static void print_header(void)
 {
-    printf("t_ms;active_output;GPIO34;GPIO35;"
-           "PWR_VOLTAGE_SENS_V;PWR_CURRENT_SENS_V;"
+    printf("t_ms;active_output");
+    for (size_t i = 0; i < NUM_INPUTS; i++) {
+        printf(";%s", g_inputs[i].net_name);
+    }
+    printf(";PWR_VOLTAGE_SENS_V;PWR_CURRENT_SENS_V;"
            "LOGIC_VOLTAGE_SENSE_V;LOGIC_CURRENT_SENS_V\n");
 }
 
 static void print_status_line(const char *active_output)
 {
     int64_t t_ms = esp_timer_get_time() / 1000;
-
-    int in34 = gpio_get_level(GPIO_INPUT_34);
-    int in35 = gpio_get_level(GPIO_INPUT_35);
 
     float volts[ADS_CH_COUNT] = { 0 };
     char  cell[ADS_CH_COUNT][8];
@@ -305,11 +324,11 @@ static void print_status_line(const char *active_output)
         }
     }
 
-    printf("%lld;%s;%d;%d;%s;%s;%s;%s\n",
-           (long long)t_ms,
-           active_output ? active_output : "-",
-           in34, in35,
-           cell[0], cell[1], cell[2], cell[3]);
+    printf("%lld;%s", (long long)t_ms, active_output ? active_output : "-");
+    for (size_t i = 0; i < NUM_INPUTS; i++) {
+        printf(";%d", gpio_get_level(g_inputs[i].pin));
+    }
+    printf(";%s;%s;%s;%s\n", cell[0], cell[1], cell[2], cell[3]);
 }
 
 /* --------------------------------------------------------------------- */
@@ -320,9 +339,14 @@ void app_main(void)
     i2c_bus_init();
 
     ESP_LOGI(TAG, "GCM core test iniciado: %d saidas sequenciais, "
-                  "2 entradas input-only, ADS1115 @ 0x%02X",
-             (int)NUM_OUTPUTS, ADS1115_ADDR);
-    ESP_LOGI(TAG, "TJA1050 assumido NAO populado (R40-R43 em 0R p/ GPIO32/33 diretos)");
+                  "%d entradas, ADS1115 @ 0x%02X",
+             (int)NUM_OUTPUTS, (int)NUM_INPUTS, ADS1115_ADDR);
+#if GCM_CAN_POPULATED
+    ESP_LOGI(TAG, "TJA1050 montado: GPIO32/33 fora da varredura");
+#else
+    ESP_LOGI(TAG, "TJA1050 NAO populado: GPIO32/33 incluidos na varredura");
+#endif
+    ESP_LOGW(TAG, "Pontes H desconectadas? EN_ALL/PWM/DIR serao levados a nivel alto");
     ESP_LOGI(TAG, "SDA1/SCL1 incluidos na varredura como teste eletrico (nao usam protocolo I2C1)");
     ESP_LOGI(TAG, "Leitura do ADS1115 via polling do bit OS (sem delay fixo)");
 
