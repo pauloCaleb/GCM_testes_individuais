@@ -1,0 +1,13 @@
+{
+  "idf.portWin": "COM11",
+  "idf.espIdfPathWin": "C:\\Users\\Caleb\\esp\\v5.4.2\\esp-idf",
+  "idf.toolsPathWin": "C:\\Users\\Caleb\\.espressif",
+  "idf.pythonInstallPath": "C:\\Users\\Caleb\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "clangd.path": "C:\\Users\\Caleb\\.espressif\\tools\\esp-clang\\esp-18.1.2_20240912\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=c:\\Users\\Caleb\\Desktop\\PI2-Projeto_integrador_2\\Docs_PCB\\CLAUDE\\gcm_core_test\\build"
+  ],
+  "idf.flashType": "UART"
+}

@@ -1,0 +1,9 @@
+CONFIG_IDF_TARGET="esp32"
+
+# Log level generoso para o teste de bring-up
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Tick rate padrão (100Hz) — atenção: timeouts do driver I2C novo (i2c_master_transmit/
+# i2c_master_receive) já são em milissegundos diretos, não em ticks, então isso não afeta
+# o driver do PCA9554 (ver PCA9554_I2C_XFER_TIMEOUT_MS em pca9554.h)
+CONFIG_FREERTOS_HZ=100
