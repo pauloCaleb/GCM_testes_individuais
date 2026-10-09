@@ -41,9 +41,9 @@ Se o PCA9554A não responder, o firmware continua: entradas e motores funcionam,
 | `proto_format.c` | Formatação do quadro de telemetria (testado no PC) |
 | `components/pca9554`, `components/vl53l1x` | Drivers (o do VL53L1X ganhou troca de endereço I2C) |
 
-## Hardware (validado em bancada; ajustar em `app_config.h` se a montagem mudar)
+## Premissas de hardware (ajustar em `app_config.h` se necessário)
 
-- Interface das pontes H: **PWM + DIR por motor e EN_ALL comum**, com **sinal + magnitude** (DIR escolhe o sentido, PWM é o módulo). Validado com as pontes H do robô; um módulo BTS7960 do tipo RPWM/LPWM exigiria mudar `motors.c`.
+- Interface das pontes H: **PWM + DIR por motor e EN_ALL comum**, com **sinal + magnitude** (DIR escolhe o sentido, PWM é o módulo). Se o seu módulo BTS7960 for do tipo RPWM/LPWM, essa premissa não vale; veja o README da raiz.
 - `EN_ALL` ativo em nível alto (INH do BTS7960: alto = habilitado, baixo = sleep). `M1_DIR_FWD_LEVEL`/`M2_DIR_FWD_LEVEL` definem qual nível de DIR é "frente".
 - PWM de 20 kHz (o BTS7960 aceita até 25 kHz).
 - LEDs da fita ativos em nível alto (`LED_ACTIVE_HIGH`).

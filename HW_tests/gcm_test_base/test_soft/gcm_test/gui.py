@@ -37,6 +37,9 @@ from .client import DEFAULT_BAUD, DEMO_PORT, GcmClient, GcmError, available_port
 
 TOF_COLORS = ["#e74c3c", "#2980b9", "#27ae60"]
 PLOT_SECONDS = 30
+UI_REFRESH_MS = 100           # widgets: 10 Hz com o ÚLTIMO quadro de telemetria
+PLOT_REFRESH_MS = 200         # gráfico: 5 Hz
+MAX_LOG_PER_DRAIN = 200       # linhas de log processadas por ciclo (proteção contra enxurrada)
 HEARTBEAT_MS = 150
 HANDSHAKE_MS = 500
 HANDSHAKE_TRIES = 60          # ~30 s: o firmware leva alguns segundos para dar boot
@@ -78,11 +81,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.client = GcmClient()
         self.ready = False
         self._handshake_tries = 0
-        self._tel_count = 0
+        self._tel_count = 0            # quadros recebidos no último segundo
+        self._ui_count = 0             # atualizações de widgets no último segundo
+        self._latest_tel = None
+        self._tel_dirty = False
+        self._plot_dirty = False
+        self._lag_max = 0.0            # maior atraso do loop de UI no último segundo (s)
+        self._last_ui = time.monotonic()
         self._csv_file = None
         self._csv_writer = None
         self._t0 = time.monotonic()
-        self._hist = collections.deque(maxlen=PLOT_SECONDS * 60)   # (t, [mm0, mm1, mm2])
+        self._hist = collections.deque()   # (t, [mm0, mm1, mm2]) só da janela visível; podado por tempo
         self._motor_dirty = [False, False]
 
         self._build_ui()
@@ -330,6 +339,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.poll_timer.timeout.connect(self._drain)
         self.poll_timer.start(25)
 
+        self.ui_timer = QtCore.QTimer(self)
+        self.ui_timer.timeout.connect(self._refresh_ui)
+        self.ui_timer.start(UI_REFRESH_MS)
+
+        self.plot_timer = QtCore.QTimer(self)
+        self.plot_timer.timeout.connect(self._refresh_plot)
+        self.plot_timer.start(PLOT_REFRESH_MS)
+
         self.hb_timer = QtCore.QTimer(self)
         self.hb_timer.timeout.connect(self._heartbeat)
         self.hb_timer.start(HEARTBEAT_MS)
@@ -518,10 +535,15 @@ class MainWindow(QtWidgets.QMainWindow):
     # recepção
     # ------------------------------------------------------------------
     def _drain(self) -> None:
-        for m in self.client.drain():
+        msgs = self.client.drain()
+        if not msgs:
+            return
+        log_budget = MAX_LOG_PER_DRAIN
+        dropped = 0
+        for m in msgs:
             t = m.get("t")
             if t == "tel":
-                self._apply_tel(m)
+                self._on_tel(m)            # só registra; a tela é atualizada em _refresh_ui
             elif t == "hello":
                 self._apply_hello(m)
             elif t == "evt":
@@ -538,10 +560,16 @@ class MainWindow(QtWidgets.QMainWindow):
             elif t == "err":
                 self.log(f"ERRO do firmware ({m.get('cmd')}): {m.get('msg')}", "err")
             elif t == "log":
-                self.log(m.get("line", ""), "fw")
+                if log_budget > 0:
+                    log_budget -= 1
+                    self.log(m.get("line", ""), "fw")
+                else:
+                    dropped += 1
             elif t == "disconnect":
                 self.disconnect_from(m.get("error", "erro de comunicação"))
             # "pong": só mantém o watchdog alimentado
+        if dropped:
+            self.log(f"... {dropped} linhas de log do firmware descartadas (excesso de mensagens)", "warn")
 
     def _apply_hello(self, m: dict) -> None:
         first = not self.ready
@@ -580,8 +608,43 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.log(f"evento: {m}", "evt")
 
-    def _apply_tel(self, m: dict) -> None:
+    def _on_tel(self, m: dict) -> None:
+        """Custo mínimo por quadro: histórico do gráfico + CSV. Os widgets ficam para _refresh_ui."""
         self._tel_count += 1
+        now = time.monotonic() - self._t0
+        row = []
+        for s in m.get("tof", [])[:3]:
+            mm = s.get("mm", -1)
+            ok = s.get("on") and mm >= 0 and s.get("st", 255) == 0
+            row.append(float(mm) if ok else float("nan"))
+        row += [float("nan")] * (3 - len(row))
+        self._hist.append((now, row))
+        self._plot_dirty = True
+
+        if self._csv_writer:
+            t = m.get("tof", [{}, {}, {}])
+            tof_cols = []
+            for i in range(3):
+                s = t[i] if i < len(t) else {}
+                tof_cols += [s.get("on", 0), s.get("mm", ""), s.get("st", "")]
+            self._csv_writer.writerow(
+                [dt.datetime.now().isoformat(timespec="milliseconds"), m.get("ms"), *m["bs"], m["start"],
+                 *tof_cols, *m["led"], m["en"], *m["m"], *m["mt"], m.get("cap"), m.get("fs")])
+
+        self._latest_tel = m
+        self._tel_dirty = True
+
+    def _refresh_ui(self) -> None:
+        """Atualiza os widgets com o ÚLTIMO quadro (no máx. 1x por UI_REFRESH_MS)."""
+        now = time.monotonic()
+        self._lag_max = max(self._lag_max, now - self._last_ui - UI_REFRESH_MS / 1000.0)
+        self._last_ui = now
+        if self._tel_dirty and self._latest_tel is not None:
+            self._tel_dirty = False
+            self._apply_tel(self._latest_tel)
+            self._ui_count += 1
+
+    def _apply_tel(self, m: dict) -> None:
         low = self.active_low.isChecked()
 
         vals = list(m.get("bs", [])) + [m.get("start")]
@@ -591,23 +654,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.in_dots[i].set_state((v == 0) if low else (v == 1))
             self.in_vals[i].setText(f"nível {v}")
 
-        now = time.monotonic() - self._t0
-        row = []
         for i, s in enumerate(m.get("tof", [])[:3]):
             if not s.get("on"):
                 self.tof_mm_lbls[i].setText("OFFLINE")
                 self.tof_st_lbls[i].setText("sensor não iniciou")
-                row.append(float("nan"))
                 continue
             mm, st = s.get("mm", -1), s.get("st", 255)
-            valid = mm >= 0 and st == 0
             self.tof_mm_lbls[i].setText(f"{mm} mm" if mm >= 0 else "...")
             self.tof_st_lbls[i].setText(f"{RANGE_STATUS.get(st, st)}  (idade {s.get('age', 0)} ms, "
                                         f"errI2C {s.get('err', 0)})")
-            row.append(float(mm) if valid else float("nan"))
-        row += [float("nan")] * (3 - len(row))
-        self._hist.append((now, row))
-        self._update_plot(now)
 
         for i, b in enumerate(self.led_btns):
             b.blockSignals(True)
@@ -621,8 +676,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_en_text(en)
 
         for ch in range(2):
-            cur, tgt = m["m"][ch], m["mt"][ch]
-            self.act_lbls[ch].setText(f"aplicado: {cur:+.1f} %")
+            self.act_lbls[ch].setText(f"aplicado: {m['m'][ch]:+.1f} %")
         if m.get("cap") is not None and int(round(m["cap"])) != self.sliders[0].maximum():
             self._set_cap(m["cap"])
 
@@ -631,27 +685,29 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.banner.setText("Failsafe ativo: motores parados. Habilite as pontes H para continuar.")
                 self.banner.show()
 
-        if self._csv_writer:
-            t = m.get("tof", [{}, {}, {}])
-            tof_cols = []
-            for i in range(3):
-                s = t[i] if i < len(t) else {}
-                tof_cols += [s.get("on", 0), s.get("mm", ""), s.get("st", "")]
-            self._csv_writer.writerow(
-                [dt.datetime.now().isoformat(timespec="milliseconds"), m.get("ms"), *m["bs"], m["start"],
-                 *tof_cols, *m["led"], m["en"], *m["m"], *m["mt"], m.get("cap"), m.get("fs")])
-
-    def _update_plot(self, now: float) -> None:
-        if not self._hist:
+    def _refresh_plot(self) -> None:
+        """Redesenha o gráfico (5 Hz) só com a janela visível de PLOT_SECONDS."""
+        now = time.monotonic() - self._t0
+        cutoff = now - PLOT_SECONDS - 1.0
+        while self._hist and self._hist[0][0] < cutoff:
+            self._hist.popleft()
+        if not self._plot_dirty or not self._hist:
             return
+        self._plot_dirty = False
         data = np.array([[t, *vals] for t, vals in self._hist], dtype=float)
         x = data[:, 0] - now
         for i in range(3):
             self.curves[i].setData(x, data[:, i + 1], connect="finite")
 
     def _update_rate(self) -> None:
-        self.rate_lbl.setText(f"telemetria: {self._tel_count} quadros/s" if self.client.connected else "")
+        if self.client.connected:
+            self.rate_lbl.setText(f"telemetria: {self._tel_count} quadros/s  |  GUI: {self._ui_count} atualizações/s, "
+                                  f"atraso máx. {self._lag_max * 1000:.0f} ms")
+        else:
+            self.rate_lbl.setText("")
         self._tel_count = 0
+        self._ui_count = 0
+        self._lag_max = 0.0
 
     # ------------------------------------------------------------------
     # log e CSV
