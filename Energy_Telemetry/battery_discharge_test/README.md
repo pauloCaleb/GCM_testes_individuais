@@ -1,38 +1,47 @@
-# battery_discharge_test
+# battery_discharge_test (v2)
 
-Teste de **descarga controlada da bateria do robô** usando a GCM como instrumento de medição. A carga eletrônica fixa descarrega a bateria; o ESP32 mede tensão e corrente (ACS758, ADS1115), integra Ah/Wh, corta a carga na tensão de **cutoff (padrão 12 V, ajustável)** e envia tudo pela serial. Um app Python (Tkinter) envia os comandos de tara/start, plota ao vivo e salva os dados em CSV.
+Teste de **descarga controlada da bateria do robô** usando a GCM como instrumento de medição. A carga eletrônica fixa descarrega a bateria; o ESP32 mede tensão e corrente (ACS758 + ADS1115), integra Ah/Wh, **desliga a carga no cutoff (padrão 12 V, ajustável)** e envia tudo por **cabo USB ou Bluetooth**. O app Python (Tkinter) controla o teste, plota ao vivo, salva CSV e tem abas de **calibração** e **análise**.
 
 ```
 battery_discharge_test/
 ├── CMakeLists.txt
-├── sdkconfig.defaults
+├── partitions.csv            # NVS + app + partição "blog" (log em flash)
+├── sdkconfig.defaults        # Bluetooth Classic, tick 1 ms, watchdog, 4 MB de flash
 ├── main/
-│   ├── CMakeLists.txt
-│   ├── Kconfig.projbuild     # parâmetros do teste (idf.py menuconfig)
-│   └── main.c                # firmware (ESP-IDF 5.4.2, ESP32)
+│   ├── main.c                # máquina de estados, aquisição, comandos
+│   ├── cal_store.c/.h        # coeficientes de calibração em NVS
+│   ├── flash_log.c/.h        # log a 1 Hz na partição "blog"
+│   ├── bt_link.c/.h          # Bluetooth Classic SPP espelhando a serial
+│   └── Kconfig.projbuild     # parâmetros (idf.py menuconfig)
 └── tools/
-    ├── battery_monitor.py    # app Tkinter: controle, gráficos e CSV
-    └── requirements.txt
+    ├── battery_monitor.py    # app Tkinter (abas Teste, Calibração, Análise)
+    ├── bm_core.py            # protocolo, limites de eixo estáveis, toolbar
+    ├── bm_calibration.py     # aba Calibração
+    ├── bm_analysis.py        # aba Análise
+    ├── requirements.txt
+    └── MANUAL_USO_E_CALIBRACAO.md   # manual completo (instalação, rotina, calibração)
 ```
+
+**Comece pelo [`tools/MANUAL_USO_E_CALIBRACAO.md`](tools/MANUAL_USO_E_CALIBRACAO.md).**
 
 ## Ligações
 
-A GCM é alimentada por **fonte de bancada** (não pela bateria). A ToFaB fica **desconectada** neste teste.
+```
+bateria (+) ──► PWR_PAD_BATT ──[ACS758]──► PWR_PAD_SENS ──► [relé opcional] ──► carga eletrônica ──► bateria (−)
+```
 
-```
-bateria (+) ──► PWR_PAD_BATT ──[ACS758]──► PWR_PAD_SENS ──► carga eletrônica ──► bateria (−)
-```
+A GCM é alimentada por **fonte de bancada** (não pela bateria) e a ToFaB fica desconectada.
 
 | Sinal | Origem | Uso |
 |---|---|---|
 | AIN0 `PWR_VOLTAGE_SENS` | divisor R8/R15 a partir de `PWR_PAD_BATT` (razão 5,7) | tensão da bateria sob carga |
 | AIN1 `PWR_CURRENT_SENS` | ACS758LCB-050B (40 mV/A, zero ≈ Vcc/2) | corrente (positiva = descarga) |
-| GPIO23 (CN15 pino 8) | saída do ESP32 | enable da carga (ativo em nível alto por padrão) |
+| GPIO23 (CN15 pino 8) | saída do ESP32 | enable da carga (ativo em alto por padrão) |
+| GPIO16 (opcional) | saída do ESP32 | relé NA em série com a carga (`BATT_RELAY_ENABLE`) |
 
-- O **GND da bateria precisa estar ligado ao GND da GCM** (referência do divisor e do ACS758).
-- O **retorno da corrente da carga deve ir direto ao negativo da bateria**, sem passar por trilhas da GCM.
-- Coloque um **resistor de pull externo no enable da carga** (pull-down se ativo em alto, pull-up se ativo em baixo), na ordem de 10 kΩ. Durante o boot e após um reset do ESP32 o pino fica fora do controle do firmware, e o resistor garante a carga desligada.
-- O GPIO23 é lógica 3,3 V: confirme que a entrada de enable da carga reconhece esse nível.
+- O **GND da bateria** vai ao GND da GCM e o **retorno da carga** direto ao negativo da bateria.
+- Coloque um **resistor de pull externo** no enable da carga (pull-down se ativo em alto): durante o boot e após reset o pino fica fora do controle do firmware.
+- Se usar relé, prefira **normalmente aberto**, com transistor e diodo de roda-livre. Com o relé aberto a corrente é zero de verdade, e a tara e o re-zero ficam corretos mesmo se a carga tiver vazamento.
 
 ## Fluxo do teste
 
@@ -42,21 +51,21 @@ IDLE ──TARE──► READY ──START──► REST ──► DISCHARGE ─
                  └───────── TARE ou RESET (a partir de DONE/FAULT) ◄────────────────┘
 ```
 
-1. **Tara** (carga desligada): média de 200 leituras do ACS758 define o zero. É rejeitada se o zero estiver a mais de 150 mV de 2,5 V. Informa também o ruído em mA.
-2. **START**: a carga fica desligada por 3 s (**REST**) para medir a tensão em repouso. Só segue se houver bateria e se a tensão em repouso for maior que `cutoff + 200 mV`.
-3. **DISCHARGE**: GPIO23 liga a carga. O firmware integra Ah e Wh e estima a resistência interna `(V_repouso − V_carga) / I` numa janela de 1 s, 1,5 s depois de ligar.
-4. **Cutoff**: 5 amostras consecutivas abaixo do cutoff desligam a carga (`CUTOFF`). `STOP` ou o tempo máximo (4 h) também encerram.
-5. **RECOVERY**: carga desligada, registro por mais 60 s. A média dos últimos 5 s dá a tensão recuperada e o **zero final do ACS758**, que mostra a deriva do offset durante o teste.
-6. **DONE**: o firmware imprime o resumo (`E;SUMMARY`) e continua transmitindo as medidas.
+1. **Tara** (carga desligada): média de 200 leituras do ACS758 define o zero (rejeitada se ficar a mais de 150 mV de 2,5 V).
+2. **START → REST (3 s):** mede a tensão em repouso e **re-zera o ACS758** (desconta a deriva desde a tara, se a diferença for < 100 mA). Só segue se houver bateria e a tensão for maior que `cutoff + 200 mV`.
+3. **DISCHARGE:** (relé fecha e) a carga liga. O firmware integra Ah e Wh e mede **R0** na primeira amostra com a carga ativa.
+4. **Cutoff:** 5 amostras consecutivas abaixo do cutoff (**tensão já calibrada**) desligam a carga. `STOP` e o tempo máximo (4 h) também encerram.
+5. **RECOVERY (60 s):** carga e relé abertos; mede **R0 no desligamento**, a tensão recuperada e o **zero final** do ACS758.
+6. **DONE:** resumo com `q_Ah` e `q_corr_Ah` (corrigido pela deriva do zero), R0, zeros e metadados.
 
-O cutoff é decidido **no firmware**: se o PC desconectar ou o Python for fechado, a descarga termina normalmente.
+O cutoff é decidido **no firmware**: se o PC ou o link cair, a descarga termina normalmente.
 
-### Proteções (carga desligada e estado `FAULT`)
+### Proteções (carga e relé desligados, estado `FAULT`)
 
 | Motivo | Condição |
 |---|---|
 | `OVERCURRENT` | corrente acima de 30 A por 3 amostras |
-| `NO_CURRENT` | corrente abaixo de 100 mA, 1,5 s após ligar (carga desconectada, enable errado) |
+| `NO_CURRENT` | corrente abaixo de 100 mA, 1,5 s após ligar |
 | `CURRENT_WITH_LOAD_OFF` | corrente acima de 300 mA com a carga desligada, no REST |
 | `NO_BATTERY` | tensão em repouso abaixo de 5 V |
 | `BATTERY_BELOW_START_LIMIT` | tensão em repouso ≤ cutoff + 200 mV |
@@ -64,80 +73,76 @@ O cutoff é decidido **no firmware**: se o PC desconectar ou o Python for fechad
 
 Task watchdog com panic: se a task travar, o ESP32 reinicia e o pull externo desliga a carga.
 
+## Novidades da v2
+
+- **Calibração** de ganho e offset da tensão e ganho da corrente, gravada em NVS (comandos `CAL`, aba *Calibração*).
+- **Re-zero** automático do ACS758 no REST e **Ah/Wh corrigidos pela deriva** (`q_corr_Ah`). Só vale para deriva: se o zero final passar de 100 mA o firmware assume corrente real e não corrige.
+- **R0** no instante em que a carga liga e desliga.
+- **Metadados** (versão, calibração, zeros) no resumo, nos eventos e no cabeçalho do CSV.
+- **Bluetooth Classic (SPP):** aparece como porta COM; PIN de pareamento; um cliente por vez.
+- **Número de sequência** nas linhas de dados (o app conta linhas perdidas) e comando `SYNC`: o app se **anexa a um teste em andamento** e reconecta sozinho depois de uma queda.
+- **Log a 1 Hz na flash** (≈ 9 h): recupera os pontos perdidos na queda do link e sobrevive a reset do ESP32 (*Baixar log da flash*).
+- **Relé opcional** em série com a carga.
+- App com abas, exportação de CSV e de 3 imagens PNG, e eixos estáveis (não ficam "dançando").
+
 ## Firmware
 
 ```bash
 . $IDF_PATH/export.sh            # ESP-IDF 5.4.2
 cd battery_discharge_test
 idf.py set-target esp32
-idf.py menuconfig                # "Battery discharge test": cutoff, limites, período...
+idf.py menuconfig                # "Battery discharge test": cutoff, PIN do Bluetooth, relé...
 idf.py build
-idf.py -p /dev/ttyUSBx flash monitor
+idf.py -p COMx erase-flash       # só na primeira vez (a tabela de partições mudou)
+idf.py -p COMx flash
 ```
 
-O `sdkconfig.defaults` fixa `CONFIG_FREERTOS_HZ=1000` (necessário para o polling do ADS1115, e o build falha com um `#error` se o tick for outro). Ele só vale numa configuração nova: se já existir um `sdkconfig`, rode `idf.py fullclean` e apague o `sdkconfig`.
+- O `sdkconfig.defaults` só vale numa configuração nova: se existir um `sdkconfig` antigo, apague-o e rode `idf.py fullclean`. O build falha com um `#error` se o tick não for 1 ms.
+- Exige **flash de 4 MB** (ESP32-WROOM-32D padrão). O `erase-flash` apaga também a calibração salva: anote os coeficientes antes.
+- **Troque o PIN do Bluetooth** (`BATT_BT_PIN`, padrão `1234`).
 
-### Principais parâmetros (`menuconfig`)
+Os parâmetros do `menuconfig` estão descritos no manual (seção 2.2).
 
-| Opção | Padrão | Descrição |
-|---|---|---|
-| `BATT_CUTOFF_MV` | 12000 | cutoff inicial |
-| `BATT_CUTOFF_MIN_MV` / `MAX_MV` | 10000 / 16000 | faixa aceita pelo comando `CUTOFF` |
-| `BATT_CUTOFF_CONSEC_SAMPLES` | 5 | amostras abaixo do cutoff para disparar |
-| `BATT_SAMPLE_PERIOD_MS` | 100 | período de amostragem e de saída |
-| `BATT_OVERSAMPLE` | 4 | conversões do ADS1115 por canal em cada amostra |
-| `BATT_MAX_CURRENT_MA` | 30000 | proteção de sobrecorrente (ajuste à sua carga) |
-| `BATT_MIN_CURRENT_MA` | 100 | corrente mínima esperada (0 desabilita) |
-| `BATT_MAX_TEST_S` | 14400 | duração máxima (0 = sem limite) |
-| `BATT_RECOVERY_S` | 60 | registro após o cutoff |
-| `BATT_V_DIV_RATIO_X10000` | 57000 | razão do divisor ×10000, para ajuste fino com multímetro |
-| `BATT_I_SENS_UV_PER_A` | 40000 | sensibilidade do ACS758 (µV/A) |
-| `BATT_LOAD_GPIO` / `BATT_LOAD_ACTIVE_HIGH` | 23 / sim | enable da carga |
+## Protocolo serial (115200 8N1; o mesmo texto pelo Bluetooth)
 
-### Protocolo serial (115200 8N1)
-
-Comandos (um por linha, sem distinção de maiúsculas): `TARE`, `START`, `STOP`, `RESET`, `CUTOFF <mV ou V>`, `STATUS`, `HELP`. O `CUTOFF` é bloqueado em `REST` e `DISCHARGE`.
-
-Respostas:
+Comandos: `TARE`, `START`, `STOP`, `RESET`, `CUTOFF <mV|V>`, `STATUS`, `SYNC`, `LOG`, `HELP`, `CAL SHOW|RESET|V|VP1|VP2|I|SET`. O `CUTOFF` e o `CAL` de tensão são bloqueados durante a descarga; `CAL I` só vale em `DISCHARGE`.
 
 ```
-H;t_boot_s;t_test_s;state;v_batt_V;i_A;p_W;q_Ah;e_Wh;ain0_V;ain1_V
-D;1050.315;1041.200;DISCHARGE;13.1964;4.4070;58.156;1.408971;20.66074;2.31516;2.68627
-E;LOAD_OFF;CUTOFF;v_V=11.9973,i_A=3.9980,q_Ah=1.772389,e_Wh=25.30301,t_s=1348.6
-E;SUMMARY;end=CUTOFF,dur_s=1348.6,q_Ah=1.772389,e_Wh=25.30301,i_avg_A=4.7313,...
-S;state=READY,cutoff_mV=12000,tared=1,zero_V=2.50999,...
+H;seq;t_boot_s;t_test_s;state;v_batt_V;i_A;p_W;q_Ah;e_Wh;ain0_V;ain1_V
+D;4210;1050.315;1041.200;DISCHARGE;13.1964;4.4070;58.156;1.408971;20.66074;2.31516;2.68627
+E;REZERO;tare_zero_V=2.51001,rest_zero_V=2.50989,delta_mA=-3.0,applied=1
+E;R0;on_mohm=50.2,v_V=16.1301,i_A=5.3798
+E;LOAD_OFF;CUTOFF;v_V=12.4932,i_A=4.1535,q_Ah=1.026181,e_Wh=14.72496,t_s=777.1
+E;SUMMARY;end=CUTOFF,test_id=1,dur_s=777.1,q_Ah=1.026181,q_corr_Ah=1.028127,...
+S;fw=2.0.0,state=READY,cutoff_mV=12000,...,v_gain_ppm=1000000,v_off_uV=0,i_gain_ppm=1000000,...
+L;120;120.000;DISCHARGE;15.4012;3.9770;0.131200;2.0210      (log da flash, resposta ao LOG)
+R;E;LOAD_ON;...                                                (evento reenviado pelo SYNC)
 ```
 
-`D` traz uma linha por amostra. As colunas `ain0_V`/`ain1_V` são as tensões cruas do ADS1115, e permitem recalcular tensão e corrente depois com outro ganho ou offset. Qualquer linha fora desse formato (boot, `ESP_LOG`) é ignorada pelo app.
+As colunas `ain0_V` e `ain1_V` são as tensões cruas do ADC: permitem refazer tensão e corrente depois com outra calibração.
 
 ## App Python
 
 ```bash
-pip install -r tools/requirements.txt     # pyserial, matplotlib (Tkinter vem com o Python)
+pip install -r tools/requirements.txt     # pyserial, matplotlib, numpy (Tkinter vem com o Python)
 python tools/battery_monitor.py
 ```
 
-- **Conectar**, depois **Tara**, depois **START**. Os botões habilitam conforme o estado do firmware. O campo de cutoff é em volts, e o valor que vale é o confirmado pelo firmware.
-- **Gráficos selecionáveis:** três checkboxes (*Tensão × tempo*, *Corrente × tempo*, *Tensão × Ah*). Os marcados dividem a área lado a lado; com um só, ele ocupa tudo. O zoom no tempo de V(t) e I(t) é ligado quando os dois estão visíveis. A linha de cutoff aparece nos gráficos de tensão e o eixo de tempo usa marcas legíveis (45s, 12m30s, 1h30). A escolha dos checkboxes e o auto-save são lembrados em `~/.gcm_battery_monitor.json`.
-- **Zoom e pan:** ao dar zoom ou pan o auto-ajuste dos eixos para (aparece o aviso "vista manual"); o botão *Home* da barra volta a acompanhar os dados.
-- **Exportar imagens (3 PNG)...:** gera três arquivos separados, `<nome>_tensao_tempo.png`, `<nome>_corrente_tempo.png` e `<nome>_tensao_capacidade.png`, a 200 dpi, com todos os pontos da sessão e independentemente de quais gráficos estão visíveis. O título traz data, motivo do fim, Ah, Wh e cutoff.
-- A janela abre maximizada (`START_MAXIMIZED` no início do script).
-- **Auto-salvar CSV** (ligado por padrão): a cada START cria `descarga_AAAAMMDD_HHMMSS.csv` na **mesma pasta do `battery_monitor.py`** (dá para trocar em *Pasta...*, só vale para aquela execução), com `host_time` + as colunas do firmware, e `..._resumo.txt` com o resumo e os eventos.
-- **Salvar CSV...** (canto direito da barra de controle, sempre visível): exporta a sessão em memória quando quiser, inclusive no meio da descarga ou depois do DONE. Com o auto-save desligado, o app avisa se houver dados não salvos ao iniciar outro teste ou fechar a janela.
-- A sessão grava do REST até DONE/FAULT.
-
-> **Aviso (reset ao abrir/fechar a porta):** em muitos adaptadores USB-serial, abrir ou fechar a porta pode pulsar DTR/RTS e reiniciar o ESP32. O app abre a porta com DTR/RTS desativados e, no circuito de auto-download da GCM, os dois no mesmo nível não aciona EN/GPIO0. Confirme isso uma vez em bancada, **sem a carga ligada**. Em todo caso, conecte *antes* do START e evite reconectar durante a descarga: um reset desliga a carga e perde o teste.
+- **Conexão:** cabo USB ou Bluetooth (porta COM), abertura sem travar a janela e **reconexão automática**.
+- **Aba Teste:** Tara, START, STOP, Reset, cutoff; três gráficos selecionáveis (tensão × tempo, corrente × tempo, tensão × Ah) lado a lado; zoom/pan com *Home*; *Limpar gráficos* / *Mostrar tudo* (só a vista; os dados seguem no CSV e nas imagens); *Salvar CSV*, *Exportar imagens (3 PNG)* e *Baixar log da flash*. **Cada teste é salvo na sua própria pasta** `descarga_AAAAMMDD_HHMMSS/` (dentro da pasta do script): CSV com cabeçalho de metadados (`# chave=valor`; leia com `pd.read_csv(..., comment="#")`), `_resumo.txt` e as 3 imagens. Ao clicar em **STOP** tudo é salvo na hora, e o fim do teste regrava a versão completa. O STOP não abre uma nova sessão: o registro segue na recuperação até o DONE.
+- **Aba Calibração:** coeficientes atuais, tensão em 1 e 2 pontos, corrente, aplicar valores manualmente e restaurar padrão.
+- **Aba Análise:** abre vários CSVs (inclusive os do formato antigo), tabela de Ah e Wh até tensões fixas, curvas sobrepostas e curva **compensada por R0**.
 
 ## Precisão e limitações
 
-- Resolução do ADS1115 (±6,144 V): LSB de 187,5 µV, o que dá ≈ 1,07 mV na tensão da bateria e ≈ 4,7 mA na corrente (antes da média).
-- O zero do ACS758 é **ratiométrico** ao Vcc: 1 % de variação no +5 V desloca o zero ≈ 25 mV (≈ 0,6 A). A tara no início compensa o valor estático, mas a deriva ao longo do teste entra no Ah. Use `i_zero_end_mA` do resumo para avaliar o erro e, se for relevante, refaça a integral offline com as colunas cruas.
-- Tensão e corrente são amostradas de forma intercalada (não simultânea); com 100 ms de período e cargas fixas o efeito é desprezível.
-- A tensão medida é a do terminal sob carga (queda no fio e no ACS758 inclusa); a resistência interna estimada inclui essa queda.
-- O cutoff de 12 V equivale a 3,0 V/célula numa bateria 4S. Confirme o valor mínimo de descarga no datasheet da sua bateria.
+- Resolução do ADS1115 (±6,144 V): LSB de 187,5 µV, ou ≈ 1,07 mV na tensão da bateria e ≈ 4,7 mA na corrente (antes da média). O ruído não limita a medida; **os erros sistemáticos limitam** (ganho do ACS758, tolerância do divisor, deriva do zero) — por isso a calibração contra instrumento.
+- A tensão medida é a do terminal **no pad da GCM** e inclui a queda nos cabos e conectores.
+- O cutoff olha o pack inteiro. Em packs sem BMS por grupo, meça os grupos no fim do teste.
+- O re-zero e a correção por deriva assumem variação linear do offset: `q_corr_Ah` é uma estimativa.
 
 ## Validação realizada
 
-- O firmware foi **compilado no PC com stubs das APIs do ESP-IDF** e executado contra um modelo simulado de bateria 4S, ADS1115, ACS758 e carga. Cobriu: descarga completa até o cutoff (Ah, Wh e resistência interna conferem com o modelo), `STOP`, `CUTOFF` e seus limites, `OVERCURRENT`, `NO_CURRENT`, `NO_BATTERY`, `BATTERY_BELOW_START_LIMIT`, `ADC_FAIL` e comando desconhecido.
-- O app Python foi testado de forma headless contra uma serial virtual reproduzindo a saída simulada: parser, gráficos, CSV, resumo e estados dos botões.
-- Testado em bancada pelo autor com a carga eletrônica. Em um primeiro uso do zero, repita a validação com a fonte no lugar da bateria e uma carga pequena: confira tara, tensão e corrente contra o multímetro, o nível de GPIO23 e o desligamento no cutoff antes de usar a bateria real.
+- A lógica do firmware foi **compilada no PC e simulada** (bateria 4S, ADS1115, ACS758, carga, relé, NVS e partição de flash em RAM): descarga completa até o cutoff, `STOP`, `CUTOFF` e limites, calibração em 1 e 2 pontos e de corrente, re-zero, correção de Ah por deriva, caso de deriva grande (re-zero rejeitado e correção anulada), R0, log em flash (apagar antes de escrever, CRC), `LOG`, `SYNC`, comando por Bluetooth simulado, erros e `FAULT`.
+- Os módulos foram conferidos (sintaxe e chamadas) contra os **cabeçalhos reais do ESP-IDF v5.4.2** para Bluetooth SPP/GAP, NVS e CRC.
+- O app foi testado de forma headless contra a saída simulada, incluindo anexar a um teste em andamento com recuperação do log, aba Análise (com o CSV real do primeiro teste) e aba Calibração.
+- **Não testado em hardware:** o rádio Bluetooth, o log em flash e o relé. O teste da v1 foi feito em bancada pelo autor, sem esses recursos. O manual (seção 8) traz os testes de aceitação para a primeira vez.

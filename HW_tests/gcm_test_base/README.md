@@ -31,7 +31,7 @@ PCA9554A: IO0..IO2 = XSHUT dos ToF (S1..S3), IO7/IO6/IO5 = LEDs 1/2/3. VL53L1X e
 
 ## Premissas e cuidados (leia antes de ligar os motores)
 
-- **Interface das pontes H**: o firmware assume PWM + DIR + EN com **sinal e magnitude**. O módulo BTS7960 de prateleira (IBT-2) tem entradas **RPWM/LPWM** (uma por sentido) e **R_EN/L_EN**, não PWM/DIR. Se o seu módulo for assim, a lógica entre os pinos PWM/DIR da GCM e o módulo (placa intermediária, ligação direta etc.) define se esta premissa vale. **Confirme antes de ligar motores**; se a conversão não existir, a geração de PWM em dois canais por motor precisa ser ajustada em `motors.c`.
+- **Interface das pontes H**: PWM + DIR + EN com **sinal e magnitude**, validada em bancada com as pontes H do robô. Se um dia trocar para um módulo BTS7960 de prateleira (IBT-2, entradas **RPWM/LPWM** e **R_EN/L_EN**), a geração de PWM em dois canais por motor precisa ser ajustada em `motors.c`.
 - `EN_ALL` é tratado como ativo em nível alto (INH do BTS7960), e "frente" como DIR em nível alto; ambos em `app_config.h`.
 - Antes do firmware subir, os GPIOs ficam flutuando: use pull-down em `EN_ALL` (e nos PWM) no lado da ponte H.
 - Primeiro teste: **motores sem carga/fora do chão**, limite de duty no padrão (30 %), mão no botão **PARAR** (Esc / Espaço).
@@ -44,5 +44,5 @@ Telemetria de potência (ADS1115), CAN e interrupção do PCA9554 (`PCA9554_INT`
 
 ## Estado da verificação
 
-- Firmware: **não foi compilado com o ESP-IDF** (o toolchain não estava disponível onde foi gerado). Foi verificado com checagem de sintaxe contra headers simulados e com testes no PC (`make -C firm/host_tests run`): parser JSON, formatador de telemetria e simulação da lógica de segurança dos motores. Revise a saída do primeiro `idf.py build`.
-- GUI/cliente: testados com o simulador do firmware (`python -m pytest -q`, 24 testes) e exercitados em modo offscreen. **Não** foram testados com a placa real.
+- **Hardware validado em bancada:** firmware e GUI testados com a GCM-PI2-2026.2 real (entradas BS_1..BS_4 e START_BOT, PCA9554A, 3x VL53L1X, LEDs da fita e os 2 motores nas pontes H). Tudo funcionando com o pinout e as polaridades de `firm/main/app_config.h`, que são a referência para os demais projetos do repositório.
+- Testes no PC continuam disponíveis: `make -C firm/host_tests run` (parser JSON, formatador de telemetria e lógica de segurança dos motores) e `python -m pytest -q` em `test_soft/` (cliente e GUI contra o simulador).

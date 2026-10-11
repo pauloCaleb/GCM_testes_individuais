@@ -44,7 +44,7 @@ GCM_testes_individuais/
 │   ├── gcm_test_base/               # REFERÊNCIA: firmware + GUI PySide6 (sensores, ToF, LEDs, motores)
 │   └── relatorio_perda_gnd_tofab_gcm.md
 ├── Energy_Telemetry/
-│   └── battery_discharge_test/      # Descarga da bateria: firmware + app Python (serial)
+│   └── battery_discharge_test/      # Descarga da bateria: firmware + app Python (USB ou Bluetooth)
 ├── Firm_tests/                      # Testes isolados (ESP-IDF 5.4.2)
 │   ├── gcm_core_test/
 │   ├── gcm_telemetry_i2c0/
@@ -63,7 +63,7 @@ Todos usam **ESP-IDF 5.4.2**, alvo **ESP32** (WROOM clássico) e o driver novo `
 | Projeto | Barramento / pinos | O que valida |
 |---|---|---|
 | [`HW_tests/gcm_test_base`](HW_tests/gcm_test_base) | CN15 completo + I2C1 | Base de testes validada: entradas, 3 ToF, LEDs da fita e 2 motores (BTS7960), com GUI e protocolo JSON a 921600 baud. |
-| [`Energy_Telemetry/battery_discharge_test`](Energy_Telemetry/battery_discharge_test) | I2C0 (ADS1115 @ `0x49`); GPIO23 = enable da carga | Descarga controlada da bateria com cutoff no firmware; app Python (Tkinter) pela serial com gráficos e CSV. Projeto do time de energia. |
+| [`Energy_Telemetry/battery_discharge_test`](Energy_Telemetry/battery_discharge_test) | I2C0 (ADS1115 @ `0x49`); GPIO23 = enable da carga | Descarga controlada da bateria com cutoff no firmware, calibração e análise. Comece pelo [manual](Energy_Telemetry/battery_discharge_test/tools/MANUAL_USO_E_CALIBRACAO.md). |
 | `Firm_tests/gcm_core_test` | I2C0 + saídas/entradas do CN15 | Bring-up do núcleo lógico: lê os 4 canais do ADS1115, amostra as entradas e acende uma saída do CN15 por vez. Saída CSV (`;`). **Rode com as pontes H desconectadas.** |
 | `Firm_tests/gcm_telemetry_i2c0` | I2C0 (ADS1115 @ `0x49`) | Telemetria de potência convertida para V e A. |
 | `Firm_tests/gcm_gpio_poll_sensors` | BS_1..BS_4, START_BOT | Polling das entradas digitais com debounce opcional. |
