@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-battery_monitor.py — Monitor do teste de descarga da bateria (GCM-PI2-2026.2), v2
+battery_monitor.py — Monitor do teste de descarga da bateria (GCM-PI2-2026.2)
 
-Conversa com o firmware `battery_discharge_test` (ESP32) por uma porta serial: cabo USB (CH340)
-ou Bluetooth (SPP; o Windows cria uma porta COM ao parear o ESP32 "GCM-BATT").
+Conversa com o firmware `battery_discharge_test` (ESP32) pela serial:
+  - envia os comandos TARE, START, STOP, RESET, CUTOFF e STATUS;
+  - recebe as linhas D;... (dados) e E;... (eventos) e plota ao vivo;
+  - grava um CSV continuo (auto-save) e permite exportar a sessao em CSV;
+  - exporta os tres graficos como imagens PNG separadas.
 
-Abas:
-  Teste        Tara/START/STOP/Reset/cutoff, gráficos ao vivo, CSV e imagens;
-  Calibração   ganho/offset de tensão e ganho de corrente (gravados no firmware);
-  Análise      compara CSVs: Ah/Wh até tensões fixas, curvas sobrepostas, compensação por R0.
+Graficos (checkboxes): Tensao x tempo, Corrente x tempo e Tensao x Ah.
+Os marcados dividem a area lado a lado.
 
-O cutoff é decidido pelo FIRMWARE: fechar este programa ou perder o link não interrompe o teste.
-Ao reconectar, o app se anexa ao teste em andamento e recupera os pontos perdidos do log da
-flash do ESP32 (1 Hz). Manual: MANUAL_USO_E_CALIBRACAO.md.
+O cutoff e decidido pelo FIRMWARE: fechar este programa nao interrompe o teste
+(mas ver o aviso no README sobre DTR/RTS reiniciar a ESP32 ao abrir/fechar a porta).
 
-Dependências: pip install pyserial matplotlib numpy
+Dependencias: pip install pyserial matplotlib
 """
 
 import csv
@@ -23,34 +23,272 @@ import json
 import math
 import os
 import queue
-import subprocess
 import sys
 import threading
-import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
 import serial
 import serial.tools.list_ports
 import matplotlib
 
 matplotlib.use("TkAgg")
 from matplotlib import ticker  # noqa: E402
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from bm_core import (  # noqa: E402
-    APP_DIR, APP_VERSION, AXIS_LIMITS, BAUD, CONFIG_PATH, D_COLUMNS, END_STATES, META_KEYS,
-    MAX_EXPORT_POINTS, MAX_PLOT_POINTS, PLOT_DEFS, PLOT_REFRESH_MS, POLL_MS, SESSION_STATES,
-    START_MAXIMIZED, STATE_ORDER, TIME_KEYS, LimitTracker, PlotToolbar, parse_kv, parse_line,
-    style_time_axis, to_float)
-from bm_calibration import CalibrationTab  # noqa: E402
-from bm_analysis import AnalysisTab  # noqa: E402
+# --------------------------------------------------------------------------
+# Protocolo
+# --------------------------------------------------------------------------
 
-RESET_REASONS = {1: "energia ligada", 2: "reset externo", 3: "reset por software", 4: "falha (panic)",
-                 5: "watchdog de interrupção", 6: "watchdog da task", 7: "watchdog", 8: "deep sleep",
-                 9: "queda de tensão (brownout)", 10: "SDIO"}
+BAUD = 115200
+D_COLUMNS = ["t_boot_s", "t_test_s", "state", "v_batt_V", "i_A", "p_W",
+             "q_Ah", "e_Wh", "ain0_V", "ain1_V"]
+SESSION_STATES = ("REST", "DISCHARGE", "RECOVERY", "DONE", "FAULT")
+END_STATES = ("DONE", "FAULT")
+MAX_PLOT_POINTS = 20000          # acima disso o grafico ao vivo usa decimacao
+MAX_EXPORT_POINTS = 200000       # nas imagens exportadas
+PLOT_REFRESH_MS = 500
+POLL_MS = 50
+START_MAXIMIZED = True
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".gcm_battery_monitor.json")
+# Pasta de saida dos CSV/resumos: a mesma pasta onde o programa esta (ou do executavel, se empacotado)
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False)
+                                          else __file__))
 
+# (chave, rotulo do checkbox, nome do arquivo exportado)
+PLOT_DEFS = [
+    ("v_t", "Tensão × tempo", "tensao_tempo"),
+    ("i_t", "Corrente × tempo", "corrente_tempo"),
+    ("v_q", "Tensão × Ah", "tensao_capacidade"),
+]
+TIME_KEYS = ("v_t", "i_t")
+# grafico -> (tracker do eixo X, tracker do eixo Y)
+AXIS_LIMITS = {"v_t": ("time", "volt"), "i_t": ("time", "cur"), "v_q": ("cap", "volt")}
+
+
+def to_float(text):
+    try:
+        return float(text)
+    except ValueError:
+        return float("nan")
+
+
+def parse_kv(text):
+    """'a=1,b=2' -> {'a': '1', 'b': '2'}"""
+    out = {}
+    for item in text.split(","):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def parse_line(line):
+    """Classifica uma linha recebida. Retorna (tipo, payload).
+
+    tipo: 'D' (dict de dados), 'E' (nome, detalhes), 'S' (dict de status),
+          'H' (cabecalho) ou 'LOG' (qualquer outra linha).
+    """
+    line = line.strip()
+    if line.startswith("D;"):
+        parts = line.split(";")
+        if len(parts) == len(D_COLUMNS) + 1:
+            row = {"state": parts[3]}
+            for name, value in zip(D_COLUMNS, parts[1:]):
+                if name != "state":
+                    row[name] = to_float(value)
+            return "D", row
+        return "LOG", line
+    if line.startswith("E;"):
+        parts = line.split(";", 2)
+        name = parts[1] if len(parts) > 1 else ""
+        details = parts[2] if len(parts) > 2 else ""
+        return "E", (name, details)
+    if line.startswith("S;"):
+        return "S", parse_kv(line[2:])
+    if line.startswith("H;"):
+        return "H", line[2:].split(";")
+    return "LOG", line
+
+
+# --------------------------------------------------------------------------
+# Eixo de tempo legivel (45s, 12m30s, 1h30)
+# --------------------------------------------------------------------------
+
+def fmt_seconds(x, pos=None):
+    if x < 0:
+        return ""
+    s = int(round(x))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}" if m else f"{h}h"
+    if m:
+        return f"{m}m{sec:02d}s" if sec else f"{m}m"
+    return f"{sec}s"
+
+
+class TimeLocator(ticker.Locator):
+    """Marcas em multiplos 'redondos' de tempo (1, 5, 10, 30 s; 1, 5, 10, 30 min; 1, 2, 6 h...)."""
+    STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800,
+             3600, 7200, 10800, 21600, 43200, 86400]
+
+    def __init__(self, target=6):
+        super().__init__()
+        self.target = target
+
+    def tick_values(self, vmin, vmax):
+        if vmax < vmin:
+            vmin, vmax = vmax, vmin
+        span = max(vmax - vmin, 1e-9)
+        step = self.STEPS[-1]
+        for s in self.STEPS:
+            if span / s <= self.target + 1:
+                step = s
+                break
+        start = math.ceil(max(vmin, 0.0) / step) * step
+        return np.arange(start, vmax + step * 1e-6, step)
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+
+def style_time_axis(ax):
+    ax.xaxis.set_major_locator(TimeLocator())
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(fmt_seconds))
+
+
+def nice_ceil(x, mantissas=(1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10)):
+    """Menor valor 'redondo' (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10 x 10^k) >= x."""
+    if x <= 0:
+        return 1.0
+    base = 10.0 ** math.floor(math.log10(x))
+    for m in mantissas:
+        if x <= m * base * (1 + 1e-9):
+            return m * base
+    return 10.0 * base
+
+
+class LimitTracker:
+    """Limites de eixo ESTAVEIS para o grafico ao vivo.
+
+    Em vez de reajustar a cada atualizacao (o que faz as margens 'dancarem'), o limite
+    so muda quando os dados passam da faixa atual, e ai salta para um valor redondo com
+    folga. Assim, durante quase todo o teste os eixos ficam parados.
+
+    kind: 'time' (s), 'cap' (Ah), 'volt' (V) ou 'cur' (A).
+    """
+
+    def __init__(self, kind):
+        self.kind = kind
+        self.reset()
+
+    def reset(self):
+        self.lo = None
+        self.hi = None
+        self.fitted = False      # ja se ajustou aos primeiros dados reais?
+        self.neg = 0.0
+
+    def update(self, dmin, dmax, cutoff=None):
+        """Retorna True se o limite mudou."""
+        return getattr(self, "_" + self.kind)(dmin, dmax, cutoff)
+
+    def _time(self, dmin, dmax, cutoff):
+        dmax = 0.0 if dmax is None else dmax
+        if self.hi is not None and dmax <= self.hi * 0.98:
+            return False
+        target = max(dmax * 1.5, 60.0)
+        step = next((s for s in TimeLocator.STEPS if target / s <= 6), TimeLocator.STEPS[-1])
+        self.hi = math.ceil(target / step) * step
+        self.lo = -0.01 * self.hi
+        return True
+
+    def _cap(self, dmin, dmax, cutoff):
+        dmax = 0.0 if dmax is None else dmax
+        if self.hi is not None and dmax <= self.hi * 0.98:
+            return False
+        self.hi = nice_ceil(max(dmax * 1.5, 0.2))
+        self.lo = -0.01 * self.hi
+        return True
+
+    def _volt(self, dmin, dmax, cutoff):
+        c = cutoff if cutoff else 12.0
+        has = dmin is not None and dmax is not None
+        if self.hi is None or (has and not self.fitted):
+            lo_src = min(dmin, c) if has else c
+            hi_src = max(dmax, c + 1.0) if has else c + 5.0
+            self.lo = math.floor((lo_src - 0.5) * 2) / 2
+            self.hi = math.ceil((hi_src + 0.5) * 2) / 2
+            self.fitted = has
+            return True
+        changed = False
+        if has and dmin < self.lo + 0.05:
+            self.lo = math.floor((dmin - 0.5) * 2) / 2
+            changed = True
+        if has and dmax > self.hi - 0.05:
+            self.hi = math.ceil((dmax + 0.5) * 2) / 2
+            changed = True
+        if c - 0.2 < self.lo:                      # cutoff alterado para baixo
+            self.lo = math.floor((c - 0.5) * 2) / 2
+            changed = True
+        return changed
+
+    def _cur(self, dmin, dmax, cutoff):
+        has = dmin is not None and dmax is not None
+        if self.hi is None or (has and not self.fitted):
+            self.hi = nice_ceil(max(dmax * 1.3, 2.0) if has else 2.0)
+            self.neg = -nice_ceil(-dmin * 1.3) if (has and dmin < -0.05) else 0.0
+            self.lo = min(-0.05 * self.hi, self.neg)
+            self.fitted = has
+            return True
+        changed = False
+        if has and dmax > self.hi * 0.97:
+            self.hi = nice_ceil(dmax * 1.3)
+            changed = True
+        if has and dmin < self.lo:
+            self.neg = -nice_ceil(-dmin * 1.3)
+            changed = True
+        if changed:
+            self.lo = min(-0.05 * self.hi, self.neg)
+        return changed
+
+
+class PlotToolbar(NavigationToolbar2Tk):
+    """Barra do matplotlib que avisa o app quando o usuario da zoom/pan (para parar o auto-ajuste)
+    e quando aperta Home (para voltar a acompanhar os dados)."""
+
+    def __init__(self, canvas, window, on_home, on_manual):
+        self._on_home = on_home
+        self._on_manual = on_manual
+        super().__init__(canvas, window, pack_toolbar=False)
+
+    def home(self, *args):
+        self._on_home()
+        super().home(*args)
+
+    def release_zoom(self, event):
+        super().release_zoom(event)
+        self._on_manual()
+
+    def release_pan(self, event):
+        super().release_pan(event)
+        self._on_manual()
+
+    def back(self, *args):
+        super().back(*args)
+        self._on_manual()
+
+    def forward(self, *args):
+        super().forward(*args)
+        self._on_manual()
+
+
+# --------------------------------------------------------------------------
+# Aplicacao
+# --------------------------------------------------------------------------
 
 class BatteryMonitor(tk.Tk):
     def __init__(self):
@@ -67,44 +305,28 @@ class BatteryMonitor(tk.Tk):
             except tk.TclError:
                 pass
 
-        # Serial / Bluetooth (porta COM)
+        # Serial
         self.ser = None
-        self.port_name = ""
         self.rx_thread = None
         self.rx_stop = threading.Event()
         self.rx_queue = queue.Queue()
-        self.connecting = False
-        self.reconnect_at = None          # time.time() da proxima tentativa automatica
 
-        # Firmware
+        # Estado do firmware
         self.fw_state = "-"
         self.fw_cutoff_mv = None
         self.fw_limits = (None, None)
-        self.status = {}
-        self.meta = {}
-        self.last_t_boot = None
 
-        # Sessao (dados gravados desde o START ou desde que o app se anexou ao teste)
+        # Sessao (dados gravados desde o START)
         self.session_active = False
         self.session_start = None
-        self.rows = []                    # lista de dicts
-        self.events = []                  # linhas de evento da sessao
-        self.csv_want = False
+        self.rows = []                 # lista de dicts
+        self.events = []               # linhas de evento da sessao
         self.csv_file = None
         self.csv_writer = None
         self.csv_path = None
-        self.session_dir = None           # pasta do teste: <saida>/descarga_AAAAMMDD_HHMMSS/
-        self.session_suffix = ""          # "_logflash" para sessoes importadas do log da flash
         self.summary = None
         self.rows_since_flush = 0
         self.exported = False
-        self.attach_declined = False
-        self.last_seq = None
-        self.lost_lines = 0
-        self.recovered_rows = 0
-        self.resync = None                # dict enquanto recupera o log da flash (anexar / reconectar)
-        self.dump_rows = []
-        self.dump_purpose = None          # "resync" ou "import"
         self._plot_dirty = False
 
         # Dados para o grafico (listas paralelas)
@@ -114,20 +336,17 @@ class BatteryMonitor(tk.Tk):
         self.q = []
 
         # Graficos
-        self.follow = True                # False apos zoom/pan manual; Home volta a True
-        self.plot_from = 0                # indice da 1a amostra mostrada (Limpar graficos avanca isto)
+        self.follow = True             # False apos zoom/pan manual; Home volta a True
         self.axes = {}
         self.lines = {}
         self.cut_lines = []
         self.trackers = {k: LimitTracker(k) for k in ("time", "cap", "volt", "cur")}
-        self.ext = self._new_ext()        # min/max correntes dos dados (evita varrer as listas)
+        self.ext = self._new_ext()     # min/max correntes dos dados (evita varrer as listas)
         self._applied = {}
 
         cfg = self._load_config()
         self.out_dir = tk.StringVar(value=APP_DIR)   # sempre a pasta do programa ao abrir
         self.autosave = tk.BooleanVar(value=cfg.get("autosave", True))
-        self.csv_meta = tk.BooleanVar(value=cfg.get("csv_meta", True))
-        self.auto_reconnect = tk.BooleanVar(value=cfg.get("auto_reconnect", True))
         self.show = {key: tk.BooleanVar(value=cfg.get("show_" + key, True))
                      for key, _, _ in PLOT_DEFS}
 
@@ -151,8 +370,7 @@ class BatteryMonitor(tk.Tk):
             return {}
 
     def _save_config(self):
-        data = {"autosave": bool(self.autosave.get()), "csv_meta": bool(self.csv_meta.get()),
-                "auto_reconnect": bool(self.auto_reconnect.get())}
+        data = {"autosave": bool(self.autosave.get())}
         for key, var in self.show.items():
             data["show_" + key] = bool(var.get())
         try:
@@ -164,9 +382,9 @@ class BatteryMonitor(tk.Tk):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
-        # --- Conexao (porta serial USB ou COM Bluetooth)
-        conn = ttk.LabelFrame(self, text="Conexão (cabo USB ou Bluetooth — ambos aparecem como porta COM)")
-        conn.pack(fill="x", padx=8, pady=(8, 2))
+        # --- Conexao
+        conn = ttk.LabelFrame(self, text="Conexão")
+        conn.pack(fill="x", padx=8, pady=(8, 4))
         ttk.Label(conn, text="Porta:").pack(side="left", padx=(8, 2))
         self.port_cb = ttk.Combobox(conn, width=22, state="readonly")
         self.port_cb.pack(side="left", padx=2, pady=4)
@@ -175,23 +393,11 @@ class BatteryMonitor(tk.Tk):
         self.btn_connect.pack(side="left", padx=(10, 2))
         self.btn_disconnect = ttk.Button(conn, text="Desconectar", command=self._disconnect)
         self.btn_disconnect.pack(side="left", padx=2)
-        ttk.Checkbutton(conn, text="Reconectar automaticamente", variable=self.auto_reconnect,
-                        command=self._save_config).pack(side="left", padx=10)
         self.lbl_conn = ttk.Label(conn, text="desconectado", foreground="#a00")
-        self.lbl_conn.pack(side="left", padx=8)
-
-        # --- Abas
-        self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=4, pady=4)
-        tab_test = ttk.Frame(self.nb)
-        self.nb.add(tab_test, text="  Teste  ")
-        self.cal_tab = CalibrationTab(self.nb, self)
-        self.nb.add(self.cal_tab, text="  Calibração  ")
-        self.ana_tab = AnalysisTab(self.nb, self)
-        self.nb.add(self.ana_tab, text="  Análise  ")
+        self.lbl_conn.pack(side="left", padx=12)
 
         # --- Controle
-        ctl = ttk.LabelFrame(tab_test, text="Controle do teste")
+        ctl = ttk.LabelFrame(self, text="Controle do teste")
         ctl.pack(fill="x", padx=8, pady=4)
         self.btn_tare = ttk.Button(ctl, text="Tara (zero do ACS758)", command=self._cmd_tare)
         self.btn_tare.pack(side="left", padx=(8, 4), pady=4)
@@ -215,7 +421,7 @@ class BatteryMonitor(tk.Tk):
         self.btn_save.pack(side="right", padx=8)
 
         # --- Valores ao vivo
-        live = ttk.LabelFrame(tab_test, text="Medidas")
+        live = ttk.LabelFrame(self, text="Medidas")
         live.pack(fill="x", padx=8, pady=4)
         self.live_vars = {}
         fields = [("Estado", "state"), ("V bateria", "v"), ("Corrente", "i"),
@@ -230,7 +436,7 @@ class BatteryMonitor(tk.Tk):
             self.live_vars[key] = var
 
         # --- Log (reserva o espaco de baixo antes do grafico)
-        logf = ttk.LabelFrame(tab_test, text="Eventos / log serial")
+        logf = ttk.LabelFrame(self, text="Eventos / log serial")
         logf.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
         self.log = tk.Text(logf, height=4, state="disabled", wrap="none", font=("TkFixedFont", 9))
         sb = ttk.Scrollbar(logf, command=self.log.yview)
@@ -243,22 +449,17 @@ class BatteryMonitor(tk.Tk):
         self.log.tag_configure("raw", foreground="#777")
 
         # --- Arquivos
-        files = ttk.LabelFrame(tab_test, text="Dados")
+        files = ttk.LabelFrame(self, text="Dados")
         files.pack(side="bottom", fill="x", padx=8, pady=4)
-        ttk.Checkbutton(files, text="Auto-salvar (uma pasta por teste)", variable=self.autosave,
+        ttk.Checkbutton(files, text="Auto-salvar CSV", variable=self.autosave,
                         command=self._save_config).pack(side="left", padx=8, pady=4)
-        ttk.Checkbutton(files, text="Metadados no CSV", variable=self.csv_meta,
-                        command=self._save_config).pack(side="left", padx=4)
-        ttk.Entry(files, textvariable=self.out_dir, width=40).pack(side="left", padx=2)
+        ttk.Entry(files, textvariable=self.out_dir, width=45).pack(side="left", padx=2)
         ttk.Button(files, text="Pasta...", command=self._choose_dir).pack(side="left", padx=2)
-        self.btn_log = ttk.Button(files, text="Baixar log da flash", command=self._import_log)
-        self.btn_log.pack(side="left", padx=10)
-        ttk.Button(files, text="Abrir pasta do teste", command=self._open_folder).pack(side="left", padx=4)
         self.lbl_file = ttk.Label(files, text="")
-        self.lbl_file.pack(side="left", padx=8)
+        self.lbl_file.pack(side="left", padx=12)
 
         # --- Graficos
-        plot = ttk.Frame(tab_test)
+        plot = ttk.Frame(self)
         plot.pack(side="top", fill="both", expand=True, padx=8, pady=4)
 
         opts = ttk.Frame(plot)
@@ -270,10 +471,6 @@ class BatteryMonitor(tk.Tk):
         self.btn_images = ttk.Button(opts, text="Exportar imagens (3 PNG)...",
                                      command=self._export_images)
         self.btn_images.pack(side="right", padx=4)
-        self.btn_clear = ttk.Button(opts, text="Limpar gráficos", command=self._clear_plots)
-        self.btn_clear.pack(side="right", padx=4)
-        self.btn_showall = ttk.Button(opts, text="Mostrar tudo", command=self._show_all_plots)
-        self.btn_showall.pack(side="right", padx=4)
         self.lbl_follow = ttk.Label(opts, text="", foreground="#a60")
         self.lbl_follow.pack(side="right", padx=10)
 
@@ -290,56 +487,20 @@ class BatteryMonitor(tk.Tk):
         self._update_plot_data()
         self._save_config()
 
-    def _update_view_label(self):
-        parts = []
-        if not self.follow:
-            parts.append("vista manual — Home retoma o acompanhamento")
-        if self.plot_from > 0:
-            parts.append("gráfico limpo — os dados anteriores continuam no CSV e nas imagens")
-        self.lbl_follow.configure(text="   |   ".join(parts))
-        self.btn_showall.configure(state="normal" if self.plot_from > 0 else "disabled")
-
     def _on_manual_view(self):
         self.follow = False
-        self._update_view_label()
+        self.lbl_follow.configure(text="vista manual — Home retoma o acompanhamento")
 
     def _on_home(self):
         self.follow = True
-        self._update_view_label()
+        self.lbl_follow.configure(text="")
         self._reset_limits()
         self._plot_dirty = True
 
-    def _clear_plots(self):
-        """Esvazia so a VISTA: os dados da sessao (CSV, resumo, imagens, Analise) ficam intactos."""
-        if not self.t or self.plot_from >= len(self.t):
-            return
-        if self.session_active and self.fw_state in ("REST", "DISCHARGE", "RECOVERY"):
-            if not messagebox.askokcancel(
-                    "Limpar gráficos",
-                    "O teste continua e o CSV segue sendo gravado. Só os gráficos serão limpos "
-                    "(os pontos anteriores continuam no CSV e nas imagens exportadas).\n\nLimpar?"):
-                return
-        self.plot_from = len(self.t)
-        self.ext = self._new_ext()
-        self.follow = True
-        self._reset_limits()
-        self._update_view_label()
-        self._update_plot_data()
-
-    def _show_all_plots(self):
-        self.plot_from = 0
-        self.ext = self._new_ext()
-        for r in self.rows:
-            self._update_ext(r)
-        self.follow = True
-        self._reset_limits()
-        self._update_view_label()
-        self._update_plot_data()
-
     @staticmethod
     def _new_ext():
-        return {"t_min": None, "t_max": None, "q_min": None, "q_max": None,
-                "v_min": None, "v_max": None, "i_min": None, "i_max": None}
+        return {"t_max": None, "q_max": None, "v_min": None, "v_max": None,
+                "i_min": None, "i_max": None}
 
     def _reset_limits(self):
         for tr in self.trackers.values():
@@ -356,9 +517,7 @@ class BatteryMonitor(tk.Tk):
         def hi(k, x):
             if not math.isnan(x) and (e[k] is None or x > e[k]):
                 e[k] = x
-        lo("t_min", row["t_test_s"])
         hi("t_max", row["t_test_s"])
-        lo("q_min", row["q_Ah"])
         hi("q_max", row["q_Ah"])
         lo("v_min", row["v_batt_V"])
         hi("v_max", row["v_batt_V"])
@@ -369,8 +528,8 @@ class BatteryMonitor(tk.Tk):
         """Aplica limites estaveis: os eixos so se movem quando os dados estouram a faixa."""
         c = self.fw_cutoff_mv / 1000.0 if self.fw_cutoff_mv else None
         e, tr = self.ext, self.trackers
-        tr["time"].update(e["t_min"], e["t_max"])
-        tr["cap"].update(e["q_min"], e["q_max"])
+        tr["time"].update(None, e["t_max"])
+        tr["cap"].update(None, e["q_max"])
         tr["volt"].update(e["v_min"], e["v_max"], c)
         tr["cur"].update(e["i_min"], e["i_max"])
         for key, ax in self.axes.items():
@@ -388,7 +547,7 @@ class BatteryMonitor(tk.Tk):
         self.lines = {}
         self.cut_lines = []
         self.follow = True
-        self._update_view_label()
+        self.lbl_follow.configure(text="")
         self._reset_limits()
         keys = [k for k, _, _ in PLOT_DEFS if self.show[k].get()]
         if not keys:
@@ -441,10 +600,9 @@ class BatteryMonitor(tk.Tk):
 
     def _update_plot_data(self, redraw=False):
         """Atualiza apenas os graficos visiveis."""
-        a = self.plot_from
-        n = len(self.t) - a
-        step = max(1, int(math.ceil(n / MAX_PLOT_POINTS))) if n > 0 else 1
-        t, v, i, q = self.t[a::step], self.v[a::step], self.i[a::step], self.q[a::step]
+        n = len(self.t)
+        step = max(1, int(math.ceil(n / MAX_PLOT_POINTS))) if n else 1
+        t, v, i, q = self.t[::step], self.v[::step], self.i[::step], self.q[::step]
         if "v_t" in self.lines:
             self.lines["v_t"].set_data(t, v)
         if "i_t" in self.lines:
@@ -477,14 +635,13 @@ class BatteryMonitor(tk.Tk):
         if s:
             parts.append(f"fim: {s.get('end', '?')}")
             q, e = to_float(s.get("q_Ah", "nan")), to_float(s.get("e_Wh", "nan"))
-            qc = to_float(s.get("q_corr_Ah", "nan"))
         elif self.rows:
-            q, e, qc = self.rows[-1]["q_Ah"], self.rows[-1]["e_Wh"], float("nan")
+            q, e = self.rows[-1]["q_Ah"], self.rows[-1]["e_Wh"]
             parts.append("teste incompleto")
         else:
-            q = e = qc = float("nan")
+            q = e = float("nan")
         if not math.isnan(q):
-            parts.append(f"{q:.3f} Ah" + ("" if math.isnan(qc) else f" ({qc:.3f} corr.)"))
+            parts.append(f"{q:.3f} Ah")
         if not math.isnan(e):
             parts.append(f"{e:.2f} Wh")
         c = self._session_cutoff_v()
@@ -538,8 +695,7 @@ class BatteryMonitor(tk.Tk):
             initial = os.path.splitext(os.path.basename(self.csv_path))[0]
         else:
             initial = f"descarga_{stamp}"
-        init_dir = self.session_dir if (self.session_dir and os.path.isdir(self.session_dir)) \
-            else (self.out_dir.get() if os.path.isdir(self.out_dir.get()) else None)
+        init_dir = self.out_dir.get() if os.path.isdir(self.out_dir.get()) else None
         base = filedialog.asksaveasfilename(
             title="Nome-base das imagens (serão salvos 3 arquivos PNG)",
             defaultextension=".png", filetypes=[("PNG", "*.png")],
@@ -554,22 +710,17 @@ class BatteryMonitor(tk.Tk):
                 "Já existem:\n" + "\n".join(os.path.basename(p) for p in existing)
                 + "\n\nSobrescrever?"):
             return
+        saved = []
         try:
-            self._save_images(stem)
+            for path, key in targets:
+                fig = self._build_export_figure(key)
+                fig.savefig(path, dpi=200)
+                saved.append(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Exportar imagens", f"Falha ao gravar:\n{exc}")
-
-    def _save_images(self, stem):
-        """Grava <stem>_tensao_tempo.png, <stem>_corrente_tempo.png e <stem>_tensao_capacidade.png."""
-        saved = []
-        for key, _, name in PLOT_DEFS:
-            path = f"{stem}_{name}.png"
-            fig = self._build_export_figure(key)
-            fig.savefig(path, dpi=200)
-            saved.append(path)
+            return
         for p in saved:
             self._log(f"Imagem salva: {p}", "evt")
-        return saved
 
     # ------------------------------------------------------------- Serial
 
@@ -584,60 +735,36 @@ class BatteryMonitor(tk.Tk):
         if not port:
             messagebox.showwarning("Porta", "Selecione uma porta serial.")
             return
-        self.reconnect_at = None
-        self._open_port_async(port, user=True)
-
-    def _open_port_async(self, port, user):
-        """Abre a porta numa thread: portas Bluetooth (COM) podem levar varios segundos."""
-        if self.connecting:
+        try:
+            ser = serial.Serial()
+            ser.port = port
+            ser.baudrate = BAUD
+            ser.timeout = 0.2
+            ser.dtr = False      # evita (quando possivel) o reset automatico da ESP32
+            ser.rts = False
+            ser.open()
+        except (serial.SerialException, OSError) as exc:
+            messagebox.showerror("Serial", f"Não foi possível abrir {port}:\n{exc}")
             return
-        self.connecting = True
-        self.port_name = port
-        self.lbl_conn.configure(text=f"conectando a {port}...", foreground="#a60")
-        self._update_buttons()
-
-        def work():
-            try:
-                ser = serial.Serial()
-                ser.port = port
-                ser.baudrate = BAUD
-                ser.timeout = 0.2
-                ser.dtr = False      # evita (quando possivel) o reset automatico da ESP32
-                ser.rts = False
-                ser.open()
-                self.rx_queue.put(("OPENED", ser))
-            except (serial.SerialException, OSError, ValueError) as exc:
-                self.rx_queue.put(("OPENERR", (str(exc), user)))
-        threading.Thread(target=work, daemon=True).start()
-
-    def _on_opened(self, ser):
-        self.connecting = False
         self.ser = ser
         self.rx_stop.clear()
         self.rx_thread = threading.Thread(target=self._reader, daemon=True)
         self.rx_thread.start()
-        self.lbl_conn.configure(text=f"conectado: {self.port_name} @ {BAUD}", foreground="#060")
-        self._log(f"Conectado a {self.port_name}", "evt")
-        self.last_seq = None
-        self.after(500, lambda: self._send("SYNC"))
-        if self.session_active:                      # reconexao no meio do teste: preenche o buraco
-            last = self.rows[-1] if self.rows else None
-            self._start_resync("gap", self._row_key(last) if last else None)
+        self.lbl_conn.configure(text=f"conectado: {port} @ {BAUD}", foreground="#060")
+        self._log(f"Conectado a {port}", "evt")
+        self.after(600, lambda: self._send("STATUS"))
         self._update_buttons()
 
     def _disconnect(self):
         if self.session_active and self.fw_state in ("REST", "DISCHARGE", "RECOVERY"):
             if not messagebox.askyesno(
                     "Teste em andamento",
-                    "Há um teste em andamento. O firmware continua e faz o cutoff sozinho; ao "
-                    "reconectar o app se anexa de novo. Em cabo USB, fechar a porta pode reiniciar "
-                    "a ESP32 (DTR/RTS) e interromper o teste.\n\nDesconectar mesmo assim?"):
+                    "Há um teste em andamento. O firmware continua e faz o cutoff sozinho, "
+                    "mas fechar a porta pode reiniciar a ESP32 (DTR/RTS) e interromper o teste.\n\n"
+                    "Desconectar mesmo assim?"):
                 return
-        self.reconnect_at = None
         self._close_port()
         self._end_session("desconectado")
-        self.lbl_conn.configure(text="desconectado", foreground="#a00")
-        self._update_buttons()
 
     def _close_port(self):
         self.rx_stop.set()
@@ -650,10 +777,6 @@ class BatteryMonitor(tk.Tk):
             except (serial.SerialException, OSError):
                 pass
             self.ser = None
-        self.connecting = False
-        if self.resync is not None:
-            self._finish_resync()
-        self.dump_purpose = None
         self.lbl_conn.configure(text="desconectado", foreground="#a00")
         self.fw_state = "-"
         self._update_buttons()
@@ -691,16 +814,10 @@ class BatteryMonitor(tk.Tk):
     # ----------------------------------------------------------- Comandos
 
     def _cmd_tare(self):
-        warm = ""
-        if self.last_t_boot is not None and not math.isnan(self.last_t_boot):
-            mins = self.last_t_boot / 60.0
-            warm = f"\n\nGCM ligada há {mins:.0f} min."
-            if mins < 10:
-                warm += " Para o zero estabilizar, o ideal é esperar uns 10 min depois de ligar."
         if messagebox.askokcancel(
                 "Tara",
                 "A carga eletrônica deve estar DESLIGADA/desconectada da corrente e nenhuma "
-                "corrente pode estar passando pelo ACS758." + warm + "\n\nExecutar a tara?"):
+                "corrente pode estar passando pelo ACS758.\n\nExecutar a tara?"):
             self._send("TARE")
 
     def _cmd_start(self):
@@ -720,12 +837,8 @@ class BatteryMonitor(tk.Tk):
         self._send("START")
 
     def _cmd_stop(self):
-        if messagebox.askokcancel(
-                "STOP",
-                "Interromper o teste? A carga será desligada. O registro segue na recuperação até o "
-                "fim (STOP de novo encerra na hora) e tudo é salvo na pasta do teste."):
+        if messagebox.askokcancel("STOP", "Interromper o teste? A carga será desligada."):
             self._send("STOP")
-            self._checkpoint_save("STOP")
 
     def _cmd_reset(self):
         self._send("RESET")
@@ -762,127 +875,43 @@ class BatteryMonitor(tk.Tk):
     def _begin_session(self):
         if not self._confirm_unsaved("iniciar um novo teste"):
             return False
-        self._start_session_state()
-        return True
-
-    def _start_session_state(self, keep_info=False):
-        """Zera os dados da sessao. keep_info preserva eventos/resumo ja recebidos (anexar/importar)."""
         self._end_session("nova sessao", quiet=True)
         self.exported = False
         self.session_active = True
         self.session_start = dt.datetime.now()
         self.rows = []
-        if not keep_info:
-            self.events = []
-            self.summary = None
+        self.events = []
         self.t, self.v, self.i, self.q = [], [], [], []
-        self.plot_from = 0               # "Limpar graficos" vale so para a sessao em que foi usado
         self.ext = self._new_ext()
+        self.summary = None
         self.csv_path = None
-        self.session_dir = None
         self.rows_since_flush = 0
-        self.csv_want = bool(self.autosave.get())
-        self.lost_lines = 0
-        self.recovered_rows = 0
         self.follow = True
-        self._update_view_label()
+        self.lbl_follow.configure(text="")
         self._reset_limits()
-        self.lbl_file.configure(text="" if self.csv_want else "(auto-save desligado)")
+        if self.autosave.get():
+            try:
+                os.makedirs(self.out_dir.get(), exist_ok=True)
+                stamp = self.session_start.strftime("%Y%m%d_%H%M%S")
+                self.csv_path = os.path.join(self.out_dir.get(), f"descarga_{stamp}.csv")
+                self.csv_file = open(self.csv_path, "w", newline="", encoding="utf-8")
+                self.csv_writer = csv.writer(self.csv_file)
+                self.csv_writer.writerow(["host_time"] + D_COLUMNS)
+                self.lbl_file.configure(text=os.path.basename(self.csv_path))
+            except OSError as exc:
+                self.csv_file = None
+                self.csv_writer = None
+                self.csv_path = None
+                messagebox.showwarning("Auto-save", f"Não foi possível criar o CSV:\n{exc}")
+        else:
+            self.lbl_file.configure(text="(auto-save desligado)")
         self._update_plot_data(redraw=True)
-
-    @staticmethod
-    def _row_key(r):
-        return (STATE_ORDER.get(r["state"], 9), r["t_test_s"])
-
-    def _attach_session(self):
-        """O firmware ja esta num teste que este app nao iniciou: anexa e recupera o historico."""
-        if not self._confirm_unsaved("anexar ao teste em andamento"):
-            self.attach_declined = True
-            return
-        self._start_session_state(keep_info=True)
-        self._log("Teste em andamento detectado: anexando e recuperando o histórico da flash...", "evt")
-        self._start_resync("attach", None)
-
-    def _start_resync(self, mode, from_key):
-        """Pede o log da flash; os dados ao vivo ficam em buffer ate o download terminar."""
-        self.resync = {"mode": mode, "buffer": [], "from_key": from_key, "last_rx": time.time()}
-        self.dump_rows = []
-        self.dump_purpose = "resync"
-        self._send("LOG")
-
-    def _finish_resync(self):
-        rs = self.resync
-        if rs is None:
-            return
-        self.resync = None
-        self.dump_purpose = None
-        buf = rs["buffer"]
-        lo = rs["from_key"]
-        hi = self._row_key(buf[0]) if buf else None
-        added = 0
-        for r in self.dump_rows:
-            k = self._row_key(r)
-            if (lo is not None and k <= lo) or (hi is not None and k >= hi):
-                continue
-            self._record_row(r)
-            added += 1
-        self.recovered_rows += added
-        self.dump_rows = []
-        for row in buf:
-            if not self.session_active:
-                break
-            self._record_live(row)
-        if added:
-            self._log(f"{added} pontos recuperados do log da flash (1 Hz).", "evt")
-        self._update_view_label()
-        self._plot_dirty = True
-
-    def _import_log(self):
-        if self.ser is None:
-            messagebox.showinfo("Log da flash", "Conecte-se ao ESP32 primeiro.")
-            return
-        if self.session_active:
-            messagebox.showinfo("Log da flash", "Há uma sessão em andamento. Aguarde o fim ou desconecte.")
-            return
-        if not self._confirm_unsaved("baixar o log da flash"):
-            return
-        self.dump_rows = []
-        self.dump_purpose = "import"
-        self._log("Baixando o log da flash do último teste...", "evt")
-        self._send("LOG")
-
-    def _finish_import(self):
-        rows, self.dump_rows, self.dump_purpose = self.dump_rows, [], None
-        if not rows:
-            messagebox.showinfo("Log da flash", "O log está vazio (nenhum teste gravado).")
-            return
-        self.session_suffix = "_logflash"
-        self._start_session_state(keep_info=True)
-        for r in rows:
-            self._record_row(r)
-        self.recovered_rows = len(rows)
-        self._end_session("log da flash importado")
-        self.session_suffix = ""
-        self._log(f"{len(rows)} pontos importados do log (1 Hz). Use Salvar CSV, Imagens ou a aba Análise.", "evt")
-
-    @staticmethod
-    def _log_row_to_full(r):
-        v, i = r["v_batt_V"], r["i_A"]
-        nan = float("nan")
-        return {"seq": None, "t_boot_s": nan, "t_test_s": r["t_test_s"], "state": r["state"],
-                "v_batt_V": v, "i_A": i, "p_W": v * i, "q_Ah": r["q_Ah"], "e_Wh": r["e_Wh"],
-                "ain0_V": nan, "ain1_V": nan, "from_log": True}
-
-    def _record_live(self, row):
-        self._record_row(row)
-        if row["state"] in END_STATES:
-            self._end_session(f"firmware em {row['state']}")
+        return True
 
     def _end_session(self, reason, quiet=False):
         """Fecha o CSV e grava o resumo. Os dados em memoria permanecem para exportar."""
         was_active = self.session_active
         self.session_active = False
-        self.resync = None
         self._plot_dirty = True      # um ultimo redesenho com os pontos finais
         if self.csv_file is not None:
             try:
@@ -892,29 +921,20 @@ class BatteryMonitor(tk.Tk):
                 pass
             self.csv_file = None
             self.csv_writer = None
-        if was_active and self.csv_path:
-            self._save_outputs()
+        if was_active and self.csv_path and self.events:
+            self._write_summary_file()
         if was_active and not quiet:
-            where = f" Salvo em {self.session_dir}." if self.session_dir else ""
-            self._log(f"Sessão encerrada ({reason}); {len(self.rows)} linhas.{where}", "evt")
+            self._log(f"Sessão encerrada ({reason}); {len(self.rows)} linhas em memória.", "evt")
 
     def _write_summary_file(self):
         path = os.path.splitext(self.csv_path)[0] + "_resumo.txt"
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"Arquivo de dados: {os.path.basename(self.csv_path)}\n")
-                f.write(f"Gerado por battery_monitor {APP_VERSION}\n")
                 if self.summary:
                     f.write("\nRESUMO\n")
                     for k, v in self.summary.items():
                         f.write(f"  {k} = {v}\n")
-                f.write("\nMETADADOS\n")
-                for k in META_KEYS:
-                    if k in self.meta:
-                        f.write(f"  {k} = {self.meta[k]}\n")
-                f.write("\nQUALIDADE DOS DADOS\n")
-                f.write(f"  linhas_perdidas_10Hz = {self.lost_lines}\n")
-                f.write(f"  pontos_recuperados_do_log_1Hz = {self.recovered_rows}\n")
                 f.write("\nEVENTOS\n")
                 for line in self.events:
                     f.write(f"  {line}\n")
@@ -928,102 +948,14 @@ class BatteryMonitor(tk.Tk):
         self.i.append(row["i_A"])
         self.q.append(row["q_Ah"])
         self._update_ext(row)
-        if self.csv_want and self.csv_writer is None and self.csv_path is None:
-            self._open_csv()
         if self.csv_writer is not None:
-            host = "" if row.get("from_log") else dt.datetime.now().isoformat(timespec="milliseconds")
-            self.csv_writer.writerow([host] + [self._cell(row, c) for c in D_COLUMNS])
+            host = dt.datetime.now().isoformat(timespec="milliseconds")
+            self.csv_writer.writerow([host] + [row[c] if c == "state" else repr(row[c])
+                                                for c in D_COLUMNS])
             self.rows_since_flush += 1
             if self.rows_since_flush >= 20:
                 self.csv_file.flush()
                 self.rows_since_flush = 0
-
-    def _save_outputs(self):
-        """Grava na pasta do teste: resumo (com metadados e eventos) e as 3 imagens."""
-        if not self.csv_path:
-            return
-        self._write_summary_file()
-        self._auto_save_images()
-
-    def _checkpoint_save(self, why):
-        """Salva agora o que existe (CSV em disco, resumo e imagens); o fim do teste sobrescreve."""
-        if not (self.session_active and self.csv_path):
-            return
-        try:
-            if self.csv_file is not None:
-                self.csv_file.flush()
-        except OSError:
-            pass
-        self.lbl_file.configure(text="salvando...")
-        self.update_idletasks()
-        self._save_outputs()
-        self.lbl_file.configure(text=os.path.basename(self.session_dir) + "/")
-        self._log(f"Dados salvos ({why}) em {self.session_dir}", "evt")
-
-    def _auto_save_images(self):
-        if not self.csv_path or not any(r["state"] == "DISCHARGE" for r in self.rows):
-            return                                          # sem descarga nao ha o que plotar
-        try:
-            self._save_images(os.path.splitext(self.csv_path)[0])
-        except (OSError, ValueError) as exc:
-            self._log(f"Não foi possível salvar as imagens: {exc}", "err")
-
-    def _open_folder(self):
-        path = self.session_dir if (self.session_dir and os.path.isdir(self.session_dir)) \
-            else self.out_dir.get()
-        try:
-            if sys.platform.startswith("win"):
-                os.startfile(path)                          # noqa: S606 (Windows)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
-            else:
-                subprocess.Popen(["xdg-open", path])
-        except (OSError, AttributeError) as exc:
-            messagebox.showerror("Abrir pasta", f"Não foi possível abrir:\n{path}\n{exc}")
-
-    @staticmethod
-    def _cell(row, c):
-        v = row.get(c)
-        if c == "state":
-            return v
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return ""
-        if c == "seq":
-            return str(int(v))
-        return repr(v)
-
-    def _meta_header_lines(self):
-        start = (self.session_start or dt.datetime.now()).isoformat(timespec="seconds")
-        lines = [f"battery_monitor {APP_VERSION}", f"inicio={start}"]
-        lines += [f"{k}={self.meta[k]}" for k in META_KEYS if k in self.meta]
-        return lines
-
-    def _open_csv(self):
-        try:
-            stamp = (self.session_start or dt.datetime.now()).strftime("%Y%m%d_%H%M%S")
-            base = f"descarga_{stamp}{self.session_suffix}"
-            folder = os.path.join(self.out_dir.get(), base)
-            n = 2
-            while os.path.exists(folder):                    # dois testes no mesmo segundo
-                folder = os.path.join(self.out_dir.get(), f"{base}_{n}")
-                n += 1
-            os.makedirs(folder)
-            self.session_dir = folder
-            self.csv_path = os.path.join(folder, os.path.basename(folder) + ".csv")
-            self.csv_file = open(self.csv_path, "w", newline="", encoding="utf-8")
-            if self.csv_meta.get():
-                for line in self._meta_header_lines():
-                    self.csv_file.write(f"# {line}\n")
-            self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(["host_time"] + D_COLUMNS)
-            self.lbl_file.configure(text=os.path.basename(folder) + "/")
-        except OSError as exc:
-            self.csv_file = None
-            self.csv_writer = None
-            self.csv_path = None
-            self.session_dir = None
-            self.csv_want = False
-            messagebox.showwarning("Auto-save", f"Não foi possível criar o CSV:\n{exc}")
 
     def _export_csv(self):
         if not self.rows:
@@ -1031,21 +963,16 @@ class BatteryMonitor(tk.Tk):
             return False
         path = filedialog.asksaveasfilename(
             defaultextension=".csv", filetypes=[("CSV", "*.csv")],
-            initialfile=(os.path.basename(self.csv_path) if self.csv_path
-                         else dt.datetime.now().strftime("descarga_%Y%m%d_%H%M%S.csv")),
-            initialdir=self.session_dir if (self.session_dir and os.path.isdir(self.session_dir))
-            else (self.out_dir.get() if os.path.isdir(self.out_dir.get()) else None))
+            initialfile=dt.datetime.now().strftime("descarga_%Y%m%d_%H%M%S.csv"),
+            initialdir=self.out_dir.get() if os.path.isdir(self.out_dir.get()) else None)
         if not path:
             return False
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
-                if self.csv_meta.get():
-                    for line in self._meta_header_lines():
-                        f.write(f"# {line}\n")
                 w = csv.writer(f)
                 w.writerow(D_COLUMNS)
                 for r in list(self.rows):
-                    w.writerow([self._cell(r, c) for c in D_COLUMNS])
+                    w.writerow([r[c] if c == "state" else repr(r[c]) for c in D_COLUMNS])
             self.exported = True
             self._log(f"Sessão exportada: {path} ({len(self.rows)} linhas)", "evt")
             return True
@@ -1065,39 +992,15 @@ class BatteryMonitor(tk.Tk):
         try:
             for _ in range(500):
                 kind, payload = self.rx_queue.get_nowait()
-                if kind == "OPENED":
-                    self._on_opened(payload)
-                elif kind == "OPENERR":
-                    msg, user = payload
-                    self.connecting = False
-                    self.lbl_conn.configure(text="desconectado", foreground="#a00")
-                    self._update_buttons()
-                    if user:
-                        messagebox.showerror("Serial", f"Não foi possível abrir {self.port_name}:\n{msg}")
-                    elif self.auto_reconnect.get():
-                        self.reconnect_at = time.time() + 3
-                        self.lbl_conn.configure(text="reconectando...", foreground="#a60")
-                elif kind == "ERRCONN":
+                if kind == "ERRCONN":
                     self._log(payload, "err")
                     self._close_port()
-                    if self.auto_reconnect.get() and self.port_name:
-                        self.reconnect_at = time.time() + 3
-                        self.lbl_conn.configure(text="link perdido — reconectando...", foreground="#a60")
-                        self._update_buttons()
-                    else:
-                        self._end_session("porta perdida")
-                        messagebox.showerror("Serial", "A porta serial foi perdida.")
+                    self._end_session("porta perdida")
+                    messagebox.showerror("Serial", "A porta serial foi perdida.")
                 else:
                     self._handle_line(payload)
         except queue.Empty:
             pass
-        if (self.reconnect_at is not None and time.time() >= self.reconnect_at
-                and not self.connecting and self.ser is None):
-            self.reconnect_at = None
-            self._open_port_async(self.port_name, user=False)
-        if self.resync is not None and time.time() - self.resync["last_rx"] > 15:
-            self._log("O log da flash parou de chegar; seguindo com os dados ao vivo.", "err")
-            self._finish_resync()
         self.after(POLL_MS, self._drain_queue)
 
     def _handle_line(self, line):
@@ -1106,34 +1009,14 @@ class BatteryMonitor(tk.Tk):
             self._handle_data(payload)
         elif kind == "E":
             self._handle_event(line, *payload)
-        elif kind == "R":                      # evento reenviado pelo SYNC
-            k2, p2 = parse_line(payload)
-            if k2 == "E":
-                self._handle_event(payload, *p2, replay=True)
         elif kind == "S":
             self._handle_status(payload)
-        elif kind == "L":
-            self.dump_rows.append(self._log_row_to_full(payload))
-            if self.resync is not None:
-                self.resync["last_rx"] = time.time()
-            n = len(self.dump_rows)
-            if n % 100 == 0:
-                self.lbl_file.configure(text=f"recuperando o log da flash: {n} pontos...")
         elif kind == "LOG":
             self._log(line, "raw")
 
     def _handle_data(self, row):
         prev_state = self.fw_state
         self.fw_state = row["state"]
-        self.last_t_boot = row["t_boot_s"]
-
-        seq = row.get("seq")                    # detecta linhas perdidas (principalmente via Bluetooth)
-        if seq is not None and not math.isnan(seq):
-            seq = int(seq)
-            if self.last_seq is not None and seq > self.last_seq + 1 and self.session_active:
-                self.lost_lines += seq - self.last_seq - 1
-            self.last_seq = seq
-
         self.live_vars["state"].set(row["state"])
         self.live_vars["v"].set(f"{row['v_batt_V']:.3f} V")
         self.live_vars["i"].set(f"{row['i_A']:.3f} A")
@@ -1141,83 +1024,33 @@ class BatteryMonitor(tk.Tk):
         self.live_vars["q"].set(f"{row['q_Ah']:.4f} Ah")
         self.live_vars["e"].set(f"{row['e_Wh']:.3f} Wh")
         self.live_vars["t"].set(self._fmt_time(row["t_test_s"]))
-        self.cal_tab.update_live(row)
         if self.fw_state != prev_state:
             self._update_buttons()
-        if self.fw_state in ("READY", "IDLE", "DONE", "FAULT"):
-            self.attach_declined = False
-
-        if (not self.session_active and self.ser is not None and not self.attach_declined
-                and self.fw_state in ("REST", "DISCHARGE", "RECOVERY")):
-            self._attach_session()
 
         if self.session_active and self.fw_state in SESSION_STATES:
-            if self.resync is not None:
-                buf = self.resync["buffer"]
-                if not (row["state"] in END_STATES and buf and buf[-1]["state"] in END_STATES):
-                    buf.append(row)
-            else:
-                self._record_live(row)
-        elif (self.session_active and self.rows and self.resync is None
-              and self.fw_state in ("READY", "IDLE")):
+            self._record_row(row)
+            if self.fw_state in END_STATES:
+                self._end_session(f"firmware em {self.fw_state}")
+        elif self.session_active and self.rows and self.fw_state in ("READY", "IDLE"):
             self._end_session("abortado antes de ligar a carga")   # STOP durante o REST
 
-    def _handle_event(self, line, name, details, replay=False):
+    def _handle_event(self, line, name, details):
         tag = "err" if name in ("FAULT", "ERR") else "evt"
         if name == "WARN" and details.startswith("ADC_ERR"):
             return        # evita inundar o log; o firmware aborta se persistir
-        if not replay:
-            self._log(line, tag)
-        if name not in ("SYNC_BEGIN", "SYNC_END", "LOGDUMP_START", "LOGDUMP_END") and \
-                (self.session_active or self.resync is not None) and line not in self.events:
+        self._log(line, tag)
+        if self.session_active:
             self.events.append(line)
-
-        self.cal_tab.on_event(name, details)
-
-        if name == "META":
-            self.meta.update(parse_kv(details))
-        elif name == "SUMMARY":
+        if name == "SUMMARY":
             _, _, kv = line.partition("E;SUMMARY;")
             self.summary = parse_kv(kv)
-            if not replay:
-                self._show_summary()
+            self._show_summary()
         elif name == "FAULT":
-            if not replay:
-                messagebox.showerror("FAULT no firmware", f"Teste abortado: {details}\nA carga foi desligada.")
-        elif name == "BOOT":
-            kv = parse_kv(details)
-            code = int(to_float(kv.get("reset", "nan"))) if not math.isnan(to_float(kv.get("reset", "nan"))) else 0
-            self.meta.update(kv)
-            if self.session_active and self.fw_state in ("REST", "DISCHARGE", "RECOVERY", "-") \
-                    and self.rows and not replay:
-                why = RESET_REASONS.get(code, f"código {code}")
-                self._end_session("ESP32 reiniciou")
-                messagebox.showwarning(
-                    "ESP32 reiniciou",
-                    f"O ESP32 reiniciou durante o teste (motivo: {why}). A carga foi desligada.\n"
-                    "Os dados já recebidos estão no CSV; os pontos a 1 Hz do teste continuam na flash — "
-                    "use 'Baixar log da flash'.")
-        elif name == "LOGDUMP_START":
-            self.dump_rows = []
-            if self.resync is not None:
-                self.resync["last_rx"] = time.time()
-        elif name == "LOGDUMP_END":
-            self.lbl_file.configure(text=os.path.basename(self.csv_path) if self.csv_path else "")
-            if self.dump_purpose == "resync" and self.resync is not None:
-                self._finish_resync()
-            elif self.dump_purpose == "import":
-                self._finish_import()
-        elif name == "ERR":
-            if details.startswith("LOG_UNAVAILABLE"):
-                if self.resync is not None:
-                    self._finish_resync()
-                self.dump_purpose = None
-            elif self.session_active and details.startswith("START_REQUIRES"):
-                self._end_session("START recusado", quiet=True)
+            messagebox.showerror("FAULT no firmware", f"Teste abortado: {details}\nA carga foi desligada.")
+        elif name == "ERR" and self.session_active and details.startswith("START_REQUIRES"):
+            self._end_session("START recusado", quiet=True)
 
     def _handle_status(self, kv):
-        self.status = kv
-        self.meta.update(kv)
         if "state" in kv:
             self.fw_state = kv["state"]
         try:
@@ -1230,7 +1063,6 @@ class BatteryMonitor(tk.Tk):
             self._plot_dirty = True
         except (KeyError, ValueError):
             pass
-        self.cal_tab.on_status(kv)
         self._update_buttons()
 
     def _show_summary(self):
@@ -1243,18 +1075,16 @@ class BatteryMonitor(tk.Tk):
             except (KeyError, ValueError):
                 return "n/d"
 
-        text = (f"Fim: {s.get('end', '?')}   (teste nº {s.get('test_id', '?')})\n"
+        text = (f"Fim: {s.get('end', '?')}\n"
                 f"Duração: {self._fmt_time(to_float(s.get('dur_s', 'nan')))}\n"
-                f"Capacidade: {f('q_Ah', ' Ah', nd=4)}   corrigida pela deriva do zero: {f('q_corr_Ah', ' Ah', nd=4)}\n"
-                f"Energia: {f('e_Wh', ' Wh')}   corrigida: {f('e_corr_Wh', ' Wh')}\n"
+                f"Capacidade: {f('q_Ah', ' Ah', nd=4)}\n"
+                f"Energia: {f('e_Wh', ' Wh')}\n"
                 f"Corrente média: {f('i_avg_A', ' A')}\n"
-                f"V repouso: {f('v_rest_V', ' V')}   V no cutoff: {f('v_cut_V', ' V')}   "
+                f"V repouso: {f('v_rest_V', ' V')}   V no cutoff: {f('v_cut_V', ' V')}\n"
                 f"V recuperada: {f('v_rec_V', ' V')}\n"
-                f"R0 ao ligar: {f('r0_on_mohm', ' mΩ', nd=1)}   ao desligar: {f('r0_off_mohm', ' mΩ', nd=1)}   "
-                f"(janela de ~1,5 s: {f('rint_mohm', ' mΩ', nd=1)})\n"
-                f"Zero do ACS758: início {f('i_zero_start_mA', ' mA', nd=1)}, fim {f('i_zero_end_mA', ' mA', nd=1)}, "
-                f"deriva média {f('drift_mA', ' mA', nd=2)}\n"
-                f"Linhas perdidas (10 Hz): {self.lost_lines}   pontos recuperados do log: {self.recovered_rows}")
+                f"R interna (estimada): {f('rint_mohm', ' mOhm', nd=1)}\n"
+                f"Zero do ACS758 no fim: {f('i_zero_end_mA', ' mA', nd=1)} "
+                f"(deriva de offset; ideal ~0)")
         self._log("---- RESUMO ----\n" + text, "evt")
         messagebox.showinfo("Resumo do teste", text)
 
@@ -1287,26 +1117,21 @@ class BatteryMonitor(tk.Tk):
         en(self.btn_stop, st in ("REST", "DISCHARGE", "RECOVERY"))
         en(self.btn_reset, st in ("DONE", "FAULT"))
         en(self.btn_cutoff, st not in ("REST", "DISCHARGE"))
-        en(self.btn_log, not self.session_active)
         self.ent_cutoff.configure(
             state="normal" if (connected and st not in ("REST", "DISCHARGE")) else "disabled")
-        self.btn_connect.configure(state="disabled" if (connected or self.connecting) else "normal")
-        self.btn_disconnect.configure(
-            state="normal" if (connected or self.connecting or self.reconnect_at is not None) else "disabled")
-        self.cal_tab.refresh_state(connected, st)
+        self.btn_connect.configure(state="disabled" if connected else "normal")
+        self.btn_disconnect.configure(state="normal" if connected else "disabled")
 
     def _on_close(self):
         if self.ser is not None and self.fw_state in ("REST", "DISCHARGE", "RECOVERY"):
             if not messagebox.askyesno(
                     "Teste em andamento",
-                    "Há um teste em andamento. O firmware faz o cutoff sozinho; ao abrir o app de novo "
-                    "ele se anexa ao teste. Em cabo USB, fechar a porta pode reiniciar a ESP32 e "
-                    "interromper o teste.\n\nFechar mesmo assim?"):
+                    "Há um teste em andamento. O firmware faz o cutoff sozinho, mas fechar a "
+                    "porta serial pode reiniciar a ESP32 e interromper o teste.\n\nFechar mesmo assim?"):
                 return
         if not self._confirm_unsaved("fechar"):
             return
         self._save_config()
-        self.reconnect_at = None
         self._end_session("janela fechada", quiet=True)
         self._close_port()
         self.destroy()

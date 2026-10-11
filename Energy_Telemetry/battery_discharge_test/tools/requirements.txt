@@ -1,3 +1,2 @@
 pyserial>=3.5
-matplotlib>=3.6
-numpy
+matplotlib>=3.5
