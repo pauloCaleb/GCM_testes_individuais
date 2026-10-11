@@ -120,13 +120,31 @@ class MainWindow(QtWidgets.QMainWindow):
         pl.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self.panels, 1)
 
-        left = QtWidgets.QVBoxLayout()
-        left.addWidget(self._build_inputs())
-        left.addWidget(self._build_leds())
-        left.addWidget(self._build_motors())
-        left.addWidget(self._build_config())
-        left.addStretch(1)
-        pl.addLayout(left, 0)
+        # Controles em duas colunas (motores à parte) para caber em telas de
+        # 1080p com escala de 125-150 % do Windows. A rolagem só aparece se
+        # ainda faltar altura: os controles nunca são espremidos.
+        controls = QtWidgets.QWidget()
+        cl = QtWidgets.QHBoxLayout(controls)
+        cl.setContentsMargins(0, 0, 0, 0)
+        col_a = QtWidgets.QVBoxLayout()
+        col_a.addWidget(self._build_inputs())
+        col_a.addWidget(self._build_leds())
+        col_a.addWidget(self._build_config())
+        col_a.addStretch(1)
+        col_b = QtWidgets.QVBoxLayout()
+        col_b.addWidget(self._build_motors())
+        col_b.addStretch(1)
+        cl.addLayout(col_a)
+        cl.addLayout(col_b)
+
+        left = QtWidgets.QScrollArea()
+        left.setWidget(controls)
+        left.setWidgetResizable(True)
+        left.setFrameShape(QtWidgets.QFrame.NoFrame)
+        left.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        left.setMinimumWidth(controls.sizeHint().width()
+                             + left.verticalScrollBar().sizeHint().width())
+        pl.addWidget(left, 0)
 
         right = QtWidgets.QVBoxLayout()
         right.addWidget(self._build_tof(), 3)
