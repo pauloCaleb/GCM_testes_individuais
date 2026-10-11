@@ -29,9 +29,9 @@ LOGIC_CURRENT_SENS      :  0.108 A  (raw AIN3 =  2.520 V)   # ACS712 em repouso
 
 | Canal | Origem física | Fórmula |
 |---|---|---|
-| `PWR_VOLTAGE_SENS` (AIN0) | Divisor R8(4,7k)/R15(1k) a partir de `Vl_PWR` | `V_batt = V_AIN0 * 5,7` |
+| `PWR_VOLTAGE_SENS` (AIN0) | Divisor R8(4,7k)/R15(1k) a partir de `PWR_PAD_BATT` (CN7 = `Vi_PWR`) | `V_batt = V_AIN0 * 5,7` |
 | `PWR_CURRENT_SENS` (AIN1) | ACS758LCB-050B, ±50 A, 40 mV/A, Vcc=5V | `I = (V_AIN1 - 2,5) / 0,040` |
-| `LOGIC_VOLTAGE_SENSE` (AIN2) | Divisor R4(4,7k)/R6(1k) na alimentação lógica protegida | `V_logic = V_AIN2 * 5,7` |
+| `LOGIC_VOLTAGE_SENSE` (AIN2) | Divisor R2(4,7k)/R6(1k) na alimentação lógica protegida | `V_logic = V_AIN2 * 5,7` |
 | `LOGIC_CURRENT_SENS` (AIN3) | ACS712-05B, ±5 A, 185 mV/A, Vcc=5V | `I = (V_AIN3 - 2,5) / 0,185` |
 
 ## Observações
@@ -39,7 +39,7 @@ LOGIC_CURRENT_SENS      :  0.108 A  (raw AIN3 =  2.520 V)   # ACS712 em repouso
 - PGA do ADS1115 configurado em ±6,144 V (não o padrão ±4,096 V) para não
   saturar `PWR_VOLTAGE_SENS`, cuja escala foi dimensionada para até ~5,3 V.
 - Polling do bit `OS` do registrador de config em passos de 1 ms / timeout
-  50 ms — mesmo padrão já validado no `gcm_core_test` para evitar truncamento
+  50 ms (o `sdkconfig.defaults` usa tick de 1 ms, como a base de testes) — mesmo padrão já validado no `gcm_core_test` para evitar truncamento
   de `vTaskDelay` abaixo do tick do FreeRTOS.
 - Pull-ups internos do ESP32 desativados (`enable_internal_pullup = false`),
   pois R9–R12 já cumprem esse papel no hardware.

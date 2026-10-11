@@ -30,14 +30,14 @@ fala com **um** sensor; para os 3 VL53L1X da ToFaB (XSHUT pelo PCA9554A) use
 ## Compilar e gravar
 
 ```
-idf.py set-target esp32          # ou esp32s3, esp32c3, etc.
+idf.py set-target esp32
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-Não foi possível compilar este projeto no ambiente onde ele foi gerado
-(sem o toolchain do ESP-IDF disponível) — revise a saída do `idf.py build`
-com atenção na primeira compilação.
+Este driver é a base do usado em `Firm_tests/gcm_tof_vl53l1x` e em
+`HW_tests/gcm_test_base` (que acrescentam a troca de endereço), ambos
+validados em bancada com a ToFaB.
 
 ## O que o driver cobre
 

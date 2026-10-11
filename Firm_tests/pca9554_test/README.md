@@ -89,13 +89,10 @@ físico — datasheet §6.1.3, §6.1.4, §6.1.5):
 - Clock configurado a 400kHz (Fast-mode), suportado pelo PCA9554/PCA9554A
   (diferente do PCF8574 antigo, limitado a 100kHz).
 
-## Próximos passos sugeridos para o time de software
+## Onde o driver é usado
 
-- Se o teste confirmar o expander funcionando, portar o controle dos XSHUT
-  dos VL53L0X para usar `pca9554_set_pin_direction` + `pca9554_set_pin_level`
-  no lugar do driver antigo do PCF8574.
-- Considerar usar o Polarity Inversion register em vez de inverter em
-  software, se algum sinal de entrada vier invertido por hardware.
-- Adicionar suporte a interrupção (pino INT, open-drain) se for necessário
-  reagir a mudanças de entrada sem polling — não implementado neste driver
-  ainda.
+O mesmo código deste driver está em `Firm_tests/gcm_tof_vl53l1x`,
+`ROBOT_FREERTOS` e `HW_tests/gcm_test_base`, que controlam os XSHUT dos 3
+VL53L1X e os LEDs da fita da ToFaB pelo PCA9554A (IO0..IO2 = XSHUT S1..S3,
+IO7/IO6/IO5 = LEDs 1/2/3). A interrupção (`PCA9554_INT`, GPIO26) ainda não é
+usada por nenhum projeto.
