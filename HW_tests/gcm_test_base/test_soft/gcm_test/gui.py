@@ -120,22 +120,16 @@ class MainWindow(QtWidgets.QMainWindow):
         pl.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self.panels, 1)
 
-        # Controles em duas colunas (motores à parte) para caber em telas de
-        # 1080p com escala de 125-150 % do Windows. A rolagem só aparece se
-        # ainda faltar altura: os controles nunca são espremidos.
+        # Coluna da esquerda: entradas, LEDs e motores. A rolagem só aparece se
+        # faltar altura (ex.: 1080p com escala de 150 % no Windows): os
+        # controles nunca são espremidos.
         controls = QtWidgets.QWidget()
-        cl = QtWidgets.QHBoxLayout(controls)
+        cl = QtWidgets.QVBoxLayout(controls)
         cl.setContentsMargins(0, 0, 0, 0)
-        col_a = QtWidgets.QVBoxLayout()
-        col_a.addWidget(self._build_inputs())
-        col_a.addWidget(self._build_leds())
-        col_a.addWidget(self._build_config())
-        col_a.addStretch(1)
-        col_b = QtWidgets.QVBoxLayout()
-        col_b.addWidget(self._build_motors())
-        col_b.addStretch(1)
-        cl.addLayout(col_a)
-        cl.addLayout(col_b)
+        cl.addWidget(self._build_inputs())
+        cl.addWidget(self._build_leds())
+        cl.addWidget(self._build_motors())
+        cl.addStretch(1)
 
         left = QtWidgets.QScrollArea()
         left.setWidget(controls)
@@ -146,9 +140,13 @@ class MainWindow(QtWidgets.QMainWindow):
                              + left.verticalScrollBar().sizeHint().width())
         pl.addWidget(left, 0)
 
+        # Direita: ToF com a maior área; embaixo, configuração ao lado do log.
         right = QtWidgets.QVBoxLayout()
         right.addWidget(self._build_tof(), 3)
-        right.addWidget(self._build_log(), 2)
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.addWidget(self._build_config(), 0)
+        bottom.addWidget(self._build_log(), 1)
+        right.addLayout(bottom, 1)
         pl.addLayout(right, 1)
 
         self.rate_lbl = QtWidgets.QLabel("")
@@ -257,11 +255,11 @@ class MainWindow(QtWidgets.QMainWindow):
             inv = QtWidgets.QCheckBox("Inverter sentido")
             # Muda o sinal do alvo: o firmware desacelera, troca DIR e acelera de novo.
             inv.stateChanged.connect(lambda _s, c=ch: self._on_slider(c))
-            gl.addWidget(s, 0, 0, 1, 3)
+            gl.addWidget(s, 0, 0, 1, 2)
+            gl.addWidget(zero, 0, 2)
             gl.addWidget(dl, 1, 0)
             gl.addWidget(al, 1, 1)
-            gl.addWidget(zero, 1, 2)
-            gl.addWidget(inv, 2, 0, 1, 3)
+            gl.addWidget(inv, 1, 2)
             lay.addWidget(g)
             self.sliders.append(s)
             self.duty_lbls.append(dl)
