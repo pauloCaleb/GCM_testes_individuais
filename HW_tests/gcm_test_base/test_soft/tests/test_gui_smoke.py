@@ -67,3 +67,31 @@ def test_gui_watchdog_banner(app):
     assert not w.en_btn.isChecked()
     w.disconnect_from()
     w.close()
+
+
+def test_gui_slider_duty_checkbox_sentido(app):
+    """Slider define só o módulo do duty; o checkbox é o único controle de sentido."""
+    w = MainWindow()
+    w.show()
+    w.connect_to("DEMO")
+    pump(app, 1.5)
+    assert w.sliders[0].minimum() == 0      # sem lado negativo no slider
+
+    w.en_btn.click()
+    w.sliders[0].setValue(20)
+    pump(app, 1.0)
+    assert w.act_lbls[0].text().startswith("aplicado: +20")
+
+    w.inv_chks[0].setChecked(True)           # desacelera, troca DIR e acelera de novo
+    pump(app, 1.0)
+    assert w.sliders[0].value() == 20
+    assert w.duty_lbls[0].text() == "alvo: -20 %"
+    assert w.act_lbls[0].text().startswith("aplicado: -20")
+
+    w.inv_chks[0].setChecked(False)
+    pump(app, 1.0)
+    assert w.act_lbls[0].text().startswith("aplicado: +20")
+
+    w._do_stop()
+    w.disconnect_from()
+    w.close()

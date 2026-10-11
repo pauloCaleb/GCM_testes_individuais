@@ -24,7 +24,7 @@ A GUI mostra:
 - **Entradas**: BS_1..BS_4 e START_BOT (nível cru; marque "ativo em nível baixo" para inverter a cor).
 - **ToF**: distância e status dos 3 VL53L1X, com gráfico dos últimos 30 s.
 - **LEDs**: um botão por LED da fita e "todos".
-- **Motores**: EN_ALL, um slider por motor (faixa = limite de duty), "Zero" e "Inverter sentido" (inverte o sinal só na GUI).
+- **Motores**: EN_ALL e, por motor, um slider com o **duty** (0 até o limite de duty), "Zero" e o checkbox **"Inverter sentido"**, que é o único controle de sentido. Com as pontes habilitadas, o motor acompanha o slider; ao marcar ou desmarcar o checkbox, o firmware desacelera até 0, troca o DIR e acelera de novo até o mesmo duty, respeitando a rampa (`slew`).
 - **Configuração**: limite de duty, rampa, watchdog e taxa de telemetria (botão Aplicar).
 - **Log**: eventos, erros, logs do ESP-IDF e gravação da telemetria em CSV.
 

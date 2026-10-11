@@ -226,7 +226,7 @@ class MainWindow(QtWidgets.QMainWindow):
             g = QtWidgets.QGroupBox(name)
             gl = QtWidgets.QGridLayout(g)
             s = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            s.setRange(-30, 30)
+            s.setRange(0, 30)          # só o módulo do duty; o sentido é o checkbox
             s.setTickPosition(QtWidgets.QSlider.TicksBelow)
             s.setTickInterval(10)
             s.valueChanged.connect(lambda _v, c=ch: self._on_slider(c))
@@ -237,6 +237,7 @@ class MainWindow(QtWidgets.QMainWindow):
             zero.setFocusPolicy(QtCore.Qt.NoFocus)
             zero.clicked.connect(lambda _c=False, c=ch: self._zero_motor(c))
             inv = QtWidgets.QCheckBox("Inverter sentido")
+            # Muda o sinal do alvo: o firmware desacelera, troca DIR e acelera de novo.
             inv.stateChanged.connect(lambda _s, c=ch: self._on_slider(c))
             gl.addWidget(s, 0, 0, 1, 3)
             gl.addWidget(dl, 1, 0)
@@ -492,10 +493,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.en_btn.setText("Pontes H HABILITADAS (EN_ALL = 1)" if on
                             else "Pontes H DESABILITADAS (EN_ALL = 0)")
 
-    def _on_slider(self, ch: int) -> None:
-        v = self.sliders[ch].value()
+    def _target_duty(self, ch: int) -> int:
+        """Duty com sinal: módulo vem do slider, sentido do checkbox "Inverter sentido"."""
         sign = -1 if self.inv_chks[ch].isChecked() else 1
-        self.duty_lbls[ch].setText(f"alvo: {v * sign:+d} %")
+        return self.sliders[ch].value() * sign
+
+    def _on_slider(self, ch: int) -> None:
+        self.duty_lbls[ch].setText(f"alvo: {self._target_duty(ch):+d} %")
         if self._send_timers[ch].isActive():
             self._motor_dirty[ch] = True
         else:
@@ -510,8 +514,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._send_timers[ch].start(60)
 
     def _send_motor(self, ch: int) -> None:
-        sign = -1 if self.inv_chks[ch].isChecked() else 1
-        duty = self.sliders[ch].value() * sign
+        duty = self._target_duty(ch)
         self._send(lambda: self.client.motor(ch + 1, duty))
 
     def _zero_motor(self, ch: int) -> None:
@@ -526,7 +529,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_cap(self, cap: float) -> None:
         c = int(round(cap))
         for s in self.sliders:
-            s.setRange(-c, c)
+            s.setRange(0, c)
         self.cap_spin.blockSignals(True)
         self.cap_spin.setValue(c)
         self.cap_spin.blockSignals(False)
